@@ -4,7 +4,7 @@ import configparser
 import csv
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import requests
 from pycountry import currencies
@@ -192,8 +192,7 @@ class StatementItem:
 
 def get_last_transaction_date():
     """
-    Return date of the last ledger transaction as unix
-    timestamp.
+    Return date of the last ledger transaction.
     """
     TRANSACTION_PATTERN = re.compile(r"\d{4}[/|-]\d{2}[/|-]\d{2}")
 
@@ -206,8 +205,7 @@ def get_last_transaction_date():
 
 def fetch_statement(api_key, from_time, to_time=datetime.now(), account="0"):
     """
-    Fetch statement in json format from the time last ledger entry
-    was added.
+    Fetch statement in json format.
     Account 0 just uses default account, I have no idea how to get
     account ids.
     """
