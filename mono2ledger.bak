@@ -1,0 +1,456 @@
+#!/usr/bin/env python3
+import argparse
+import itertools
+import json
+import os
+import random
+import re
+import shlex
+import subprocess
+import sys
+import tomllib
+from datetime import datetime, timedelta
+from itertools import islice as take
+from urllib.parse import urljoin
+from urllib.request import Request, urlopen
+
+# TODO: Proper config parser module which will check for required fields and print
+# warnings like for case where recomended value is not set
+# Also invalid values should have proper error description rather than just exceptions
+# TODO: Replace pycountry with single variable containing needed currencies
+from pycountry import currencies
+
+Currency = list(currencies)[0].__class__
+
+
+ENDPOINT = "https://api.monobank.ua"
+# TODO: Dates should be taken from config with defaults set here
+# Date format used by ledger
+
+# Datetime format used in header
+HEADER_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+TRANSFER_MCC = 4829
+
+
+def get_config():
+    """Return parsed content of config file."""
+    config_file = os.path.join(
+        os.getenv("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
+        "mono2ledger/config.toml",
+    )
+    with open(config_file, "rb") as file:
+        return tomllib.load(file)
+
+
+def get_api_key():
+    config_command = config.get("api_key_command")
+    if command := (config_command or os.getenv("MONO2LEDGER_API_KEY_COMMAND")):
+        proc = subprocess.Popen(
+            shlex.split(command), stdount=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        stdout, stderr = proc.communcate()
+        if proc.returncode != 0:
+            raise ValueError(
+                "Command to obtain API key failed with"
+                f" stdout='{stdout}', stderr='{stderr}'"
+            )
+        return stdout.decode().split("\n")[0]
+
+
+config = get_config()
+api_key = get_api_key()
+ledger_date_format = config.get("ledger_date_format", "%Y/%m/%d")
+
+
+def fetch(endpoint):
+    url = urljoin("https://api.monobank.ua", endpoint)
+    request = Request(url, headers={"X-Token": api_key})
+    response = urlopen(request)
+    return json.load(response.fp)
+
+
+def get_attribute(self, path):
+    result = self.json
+    for key in path.split("."):
+        result = result.get(key)
+    return result
+
+
+# TODO: Can maybe be defined as variables instead of functions to make this tidier
+def json_property(path):
+    return property(lambda self: get_attribute(self, path))
+
+
+def json_amount_property(path):
+    return property(lambda self: get_attribute(self, path) / 100)
+
+
+def json_currency_property(path, kind="numeric"):
+    return property(
+        lambda self: currencies.get(**{kind: str(get_attribute(self, path))})
+    )
+
+
+def json_timestamp_property(path):
+    return property(lambda self: datetime.fromtimestamp(get_attribute(self, path)))
+
+
+class JSONObject:
+    json: dict = {}
+
+    def __init__(self, _object: str | dict = None, **kwargs):
+        if _object:
+            if isinstance(_object, str):
+                self.json = json.loads(_object)
+            else:
+                self.json = _object
+
+        self.json |= kwargs
+
+    def __repr__(self):
+        return str(self.json)
+
+
+class StatementItem(JSONObject):
+    account = None
+    id = json_property("id")
+    time = json_timestamp_property("time")
+    description = json_property("description")
+    # TODO: Figure out difference between mcc and originalMcc
+    mcc = json_property("mcc")
+    original_mcc = json_property("originalMcc")
+    currency = json_currency_property("currencyCode")
+    # Amount is the amount in card value and operationAmount is
+    # value in foreign currency if exchange is done.
+    # operationAmount == amount if currencyCode == card currencyCode
+    amount = json_amount_property("amount")
+    operation_amount = json_amount_property("operationAmount")
+    cashback = json_amount_property("cashbackAmount")
+    # Commission is only available i.e. when transfering between
+    # different banks. For now store and ignore it but for future
+    # TODO: handle commission
+    commission = json_amount_property("comissionRate")
+    # Account balance after operation
+    balance = json_amount_property("balance")
+    # See https://en.wikipedia.org/wiki/Authorization_hold
+    hold = json_property("hold")
+    # Currently unused, but in future might want to add it as a tag
+    receipt_id = json_property("receiptId")
+    # NOTE: When amount is positive this is data of sender and when it is negative this
+    # is data of receiver
+    recepient_name = json_property("counterName")
+    recepient_iban = json_property("counterIban")
+    recepient_edrpou = json_property("counterEdrpou")
+
+    def __init__(self, _object=None, account=None, **kwargs):
+        super().__init__(_object, **kwargs)
+        self.account = account
+
+    @property
+    def is_send(self):
+        return self.operation_amount < 0
+
+    @property
+    def is_receive(self):
+        return self.operation_amount > 0
+
+
+class Account(JSONObject):
+    id = json_property("id")
+    type = json_property("type")
+    iban = json_property("iban")
+    balance = json_amount_property("balance")
+    credit_limit = json_amount_property("creditLimit")
+    currency = json_currency_property("currencyCode")
+    cashback_type = json_currency_property("cashbackType", "alpha_3")
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._statements = []
+
+    def fetch_statements(self, from_time: datetime, to_time: datetime):
+        if self._statements:
+            raise ValueError(
+                "Statements were already fetched."
+                " Fetching multiple times with different dates is not supported"
+            )
+        intervals = []
+        if (to_time - from_time).days <= 30:
+            intervals += [from_time, to_time]
+        else:
+            current_interval = to_time - from_time
+            current_time = from_time
+            # TODO: These is probably a nicer way to do this with recursion
+            while current_interval.days > 30:
+                # This can do requests with current timestampt in the future but API
+                # does not seem to care and neither do I
+                interval = current_time + timedelta(days=30)
+                intervals += [current_time, interval]
+                current_interval -= 30
+                current_time = interval
+
+        with open("./statements.json", "rb") as f:
+            statements = json.load(f)[self.id]
+        # for from_time, to_time in intervals:
+        # url = (
+        #     f"{ENDPOINT}/personal/statement"
+        #     f"/{self.id}"
+        #     f"/{from_time.timestamp()}"
+        #     f"/{to_time.timestamp()}"
+        # )
+        # TODO: Handle case where there are more than 500 entries and API truncates
+        # them
+        # TODO: Make sure to throttle this to one request per 60 seconds
+        # response = requests.get(url, headers={"X-Token": api_key})
+        # response.raise_for_status()
+
+        # for statement in response.json():
+        for statement in statements:
+            self._statements.append(StatementItem(statement, account=self))
+
+    @property
+    def statements(self):
+        if not self._statements:
+            raise ValueError("You need to fetch statements first")
+        return self._statements
+
+    def filter_statements(
+        self, from_time: datetime = None, to_time: datetime = None, **kwargs
+    ):
+        if not self._statements:
+            raise ValueError("You need to fetch statements first")
+
+        def matcher(x):
+            predicates: list[bool] = [
+                all(getattr(x, key) == value for key, value in kwargs.items())
+            ]
+            if from_time:
+                predicates.append(x.time >= from_time)
+            if to_time:
+                predicates.append(x.time <= to_time)
+
+            return all(predicates)
+
+        return filter(matcher, self._statements)
+
+
+def get_last_transaction_date(file):
+    """
+    Return date of the last ledger transaction in file.
+    """
+    pattern = re.compile(r"\d{4}[/|-]\d{2}[/|-]\d{2}")
+    result = None
+    for line in file.readlines():
+        if match := pattern.findall(line):
+            result = match[0]
+    if not result:
+        raise ValueError
+
+    return datetime.strptime(result, ledger_date_format)
+
+
+def fetch_accounts() -> list[Account]:
+    # TODO: This should prefetch statements
+    with open("./clientinfo.json", "rb") as f:
+        return [
+            Account(account)
+            for account in json.load(f)["accounts"]
+            if account["id"] not in config["ignored_accounts"]
+        ]
+    # url = f"{endpoint}/personal/client-info"
+    # result = requests.get(url, headers={"X-Token": api_key})
+    # if result.status_code != 200:
+    #     raise ValueError(result.json())
+
+    # return [Account.from_json(account) for account in result.json()['accounts']]
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("input", type=argparse.FileType("r"))
+    parser.add_argument("output", type=argparse.FileType("w"), nargs="?")
+    args = parser.parse_args(sys.argv[-1:])
+    last_transaction_date = get_last_transaction_date(args.input)
+    now = datetime.now()
+    header_datetime = now.strftime(HEADER_DATETIME_FORMAT)
+    header = f"\n;; Begin mono2ledger output\n;; Date and time: {header_datetime}\n"
+    footer = ";; End mono2ledger output\n"
+
+    accounts = fetch_accounts()
+    for account in accounts:
+        # TODO: Add indication that we are waiting
+        account.fetch_statements(from_time=last_transaction_date, to_time=now)
+
+    card_ibans = [account.iban for account in accounts]
+    linked_transaction_ids: set[str] = set()
+
+    def get_matching_account(**kwargs):
+        return next(
+            filter(
+                lambda x: all(
+                    getattr(x, key) == value for key, value in kwargs.items()
+                ),
+                accounts,
+            ),
+            None,
+        )
+
+    def guess_account(statement):
+        description = statement.description
+        # TODO: Just use conunterIban instead of coming up with new names
+        if statement.recepient_iban:
+            return get_matching_account(iban=statement.recepient_iban)
+        if "ФОП" in description:
+            card_type = "fop"
+        elif matches := re.match(r".*(чорн|біл)(у|ої).*", description):
+            matched_card = matches[1]
+            if matched_card.startswith("чорн"):
+                card_type = "black"
+            elif matched_card.startswith("біл"):
+                card_type = "white"
+
+        if matches := re.match(r".*(гривне|євро|долар)(вий|вого).*", description):
+            matched_currency = matches[1]
+            currency = None
+            if matched_currency.startswith("гривн"):
+                currency = currencies.get(alpha_3="UAH")
+            elif matched_currency.startswith("євро"):
+                currency = currencies.get(alpha_3="EUR")
+            elif matched_currency.startswith("долар"):
+                currency = currencies.get(alpha_3="USD")
+            if currency:
+                return get_matching_account(currency=currency, type=card_type)
+
+    def format_ledger_transaction(
+        statement, account, source_statement=None, source_account=None
+    ):
+        # TODO: get_account whihc will return account funds came from based on
+        # account, maybe from config
+        # TODO: get_to_account which will return appropriate account for expense
+        # transaction. Make sure to take into account that there are not only expenses
+
+        exchange_amount = None
+        exchange_currency = None
+        if source_statement and source_account:
+            payee = config["transfer_payee"]
+            to_account = config["account"][account.id]["name"]
+            from_account = config["account"][source_account.id]["name"]
+            if source_statement.amount != source_statement.operation_amount:
+                exchange_amount = source_statement.amount
+                exchange_currency = source_account.currency
+        else:
+            payee = f"foobar - {statement.description}"
+            from_account = config["account"][account.id]["name"]
+            to_account = f"statement:{statement.id}"
+            if statement.amount != statement.operation_amount:
+                exchange_amount = statement.amount
+                exchange_currency = statement.currency
+
+        exchange = (
+            f" @@ {-exchange_amount} {exchange_currency.alpha_3}"
+            if exchange_amount and exchange_currency
+            else ""
+        )
+
+        return (
+            f"{statement.time.strftime(ledger_date_format)} {payee}\n"
+            f"\t{to_account:60} {-statement.amount:8} {account.currency.alpha_3}"
+            f"{exchange}\n"
+            f"\t{from_account}\n"
+        )
+
+    def find_source(statement):
+        # IT WORKS
+        if statement.mcc == TRANSFER_MCC:
+            if statement.is_send:
+                filters = {"from_time": statement.time - timedelta(minutes=5)}
+            else:
+                filters = {"to_time": statement.time + timedelta(minutes=5)}
+
+            filters |= {
+                "mcc": TRANSFER_MCC,
+                "currency": statement.currency,
+                "operation_amount": -statement.operation_amount,
+            }
+
+            account = (
+                statement.account if statement.is_send else guess_account(statement)
+            )
+
+            matched_statement = next(account.filter_statements(**filters), statement)
+            if matched_statement != statement:
+                return find_source(matched_statement)
+        return statement
+
+    def get_source(statement):
+        if statement.mcc == TRANSFER_MCC and (account := guess_account(statement)):
+            return find_source(statement, account)
+        return statement
+
+    statements = sorted(
+        (statement for account in accounts for statement in account.statements),
+        key=lambda x: (x.time, x.amount),
+        reverse=True,
+    )
+    cross_card_statements = []
+    normal_statements = []
+
+    for statement in statements:
+        # TODO: Source and destination are different. For destination I always just want
+        # to follow iban/description to card. For source I want to inspect title and
+        # previous statements and if some of previous statements are a source of this
+        # one return it else return None or same statement
+        # print("s:", statement)
+        # print("d:", find_source(statement, statement.account))
+        if (destination := find_source(statement)) != statement:
+            # Due to the way statements are sorted we know that the next matching
+            # statement is the destination, and the source is always the same
+            # TODO: The reason this does not work is because for fop->black transaction
+            # there is an intermediate transaction. So the algorithm then is that
+            # black-<uah-fop and uah-fop->black is matched but intermediate transaction
+            # to transfer money to UAH fop is matched with fop transaction and so
+            # is neither is present in cross_card_statements list so if check fails
+            # and results in two cross_card_statement items for each real transfer
+            # The solution is probably to cHck amounts in combination with this presense
+            if result := next(
+                filter(
+                    lambda x: destination in x[1] or statement in x[1],
+                    enumerate(cross_card_statements),
+                ),
+                None,
+            ):
+                index = result[0]
+                cross_card_statements[index].append(statement)
+            else:
+                cross_card_statements.append([statement, destination])
+        else:
+            normal_statements.append(statement)
+
+    # print(statements)
+    # print(header)
+    # for account in accounts:
+    #     for statement in reversed(account.statements):
+    #         source_statement = get_source(statement, account)[0]
+    #         source_account = source_statement.account
+    #         if source_statement != statement or source_account != account:
+    #             if (
+    #                 statement.operation_amount > 0
+    #                 and source_statement.operation_amount < 0
+    #                 and all(
+    #                     statement not in item and source_statement not in item
+    #                     for item in cross_card_statements
+    #                 )
+    #             ):
+    #                 print(
+    #                     format_ledger_transaction(
+    #                         statement, account, source_statement, source_account
+    #                     )
+    #                 )
+    #                 cross_card_statements.append((statement, source_statement))
+    #         else:
+    #             if all(statement not in item for item in cross_card_statements):
+    #                 print(format_ledger_transaction(statement, account))
+
+    print(cross_card_statements)
+    print(len(cross_card_statements))
+    print(footer)
