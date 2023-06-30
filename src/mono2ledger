@@ -10,7 +10,6 @@ import subprocess
 import sys
 import tomllib
 from datetime import datetime, timedelta
-from itertools import islice as take
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
@@ -44,7 +43,7 @@ def get_config():
 
 def get_api_key():
     config_command = config.get("api_key_command")
-    if command := (config_command or os.getenv("MONO2LEDGER_API_KEY_COMMAND")):
+    if command := (os.getenv("MONO2LEDGER_API_KEY_COMMAND") or config_command):
         proc = subprocess.Popen(
             shlex.split(command), stdount=subprocess.PIPE, stderr=subprocess.PIPE
         )
@@ -321,9 +320,7 @@ if __name__ == "__main__":
             if currency:
                 return get_matching_account(currency=currency, type=card_type)
 
-    def format_ledger_transaction(
-        statement, account, source_statement=None, source_account=None
-    ):
+    def format_ledger_transaction(statement, source_statement=None):
         # TODO: get_account whihc will return account funds came from based on
         # account, maybe from config
         # TODO: get_to_account which will return appropriate account for expense
@@ -331,17 +328,19 @@ if __name__ == "__main__":
 
         exchange_amount = None
         exchange_currency = None
-        if source_statement and source_account:
+        if source_statement:
             payee = config["transfer_payee"]
-            to_account = config["account"][account.id]["name"]
-            from_account = config["account"][source_account.id]["name"]
+            to_account = config["account"][statement.account.id]["name"]
+            from_account = config["account"][source_statement.account.id]["name"]
+            amount = statement.amount
             if source_statement.amount != source_statement.operation_amount:
                 exchange_amount = source_statement.amount
-                exchange_currency = source_account.currency
+                exchange_currency = source_statement.account.currency
         else:
             payee = f"foobar - {statement.description}"
-            from_account = config["account"][account.id]["name"]
+            from_account = config["account"][statement.account.id]["name"]
             to_account = f"statement:{statement.id}"
+            amount = -statement.amount
             if statement.amount != statement.operation_amount:
                 exchange_amount = statement.amount
                 exchange_currency = statement.currency
@@ -354,7 +353,7 @@ if __name__ == "__main__":
 
         return (
             f"{statement.time.strftime(ledger_date_format)} {payee}\n"
-            f"\t{to_account:60} {-statement.amount:8} {account.currency.alpha_3}"
+            f"\t{to_account:60} {amount:8} {statement.account.currency.alpha_3}"
             f"{exchange}\n"
             f"\t{from_account}\n"
         )
@@ -390,7 +389,6 @@ if __name__ == "__main__":
     statements = sorted(
         (statement for account in accounts for statement in account.statements),
         key=lambda x: (x.time, x.amount),
-        reverse=True,
     )
     cross_card_statements = []
     normal_statements = []
@@ -402,7 +400,9 @@ if __name__ == "__main__":
         # one return it else return None or same statement
         # print("s:", statement)
         # print("d:", find_source(statement, statement.account))
-        if (destination := find_source(statement)) != statement:
+        account = guess_account(statement)
+        source = find_source(statement)
+        if source != statement:
             # Due to the way statements are sorted we know that the next matching
             # statement is the destination, and the source is always the same
             # TODO: The reason this does not work is because for fop->black transaction
@@ -414,7 +414,7 @@ if __name__ == "__main__":
             # The solution is probably to cHck amounts in combination with this presense
             if result := next(
                 filter(
-                    lambda x: destination in x[1] or statement in x[1],
+                    lambda x: source in x[1] or statement in x[1],
                     enumerate(cross_card_statements),
                 ),
                 None,
@@ -422,35 +422,30 @@ if __name__ == "__main__":
                 index = result[0]
                 cross_card_statements[index].append(statement)
             else:
-                cross_card_statements.append([statement, destination])
-        else:
+                cross_card_statements.append([statement, source])
+        elif not account:
             normal_statements.append(statement)
 
-    # print(statements)
-    # print(header)
-    # for account in accounts:
-    #     for statement in reversed(account.statements):
-    #         source_statement = get_source(statement, account)[0]
-    #         source_account = source_statement.account
-    #         if source_statement != statement or source_account != account:
-    #             if (
-    #                 statement.operation_amount > 0
-    #                 and source_statement.operation_amount < 0
-    #                 and all(
-    #                     statement not in item and source_statement not in item
-    #                     for item in cross_card_statements
-    #                 )
-    #             ):
-    #                 print(
-    #                     format_ledger_transaction(
-    #                         statement, account, source_statement, source_account
-    #                     )
-    #                 )
-    #                 cross_card_statements.append((statement, source_statement))
-    #         else:
-    #             if all(statement not in item for item in cross_card_statements):
-    #                 print(format_ledger_transaction(statement, account))
+    all_statements = sorted(
+        itertools.chain(cross_card_statements, normal_statements),
+        key=(
+            lambda x: (x.time, x.amount)
+            if not isinstance(x, list)
+            else (x[0].time, x[0].amount)
+        ),
+    )
+    for statement in all_statements:
+        if isinstance(statement, list):
+            sorted_cross_card_statement = sorted(
+                statement, key=lambda x: (x.time, x.amount), reverse=True
+            )
+            print(
+                format_ledger_transaction(
+                    sorted_cross_card_statement[0], sorted_cross_card_statement[-1]
+                )
+            )
+            pass
+        else:
+            print(format_ledger_transaction(statement))
 
-    print(cross_card_statements)
-    print(len(cross_card_statements))
-    print(footer)
+    # print(footer)
