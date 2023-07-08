@@ -3,20 +3,23 @@ import argparse
 import itertools
 import json
 import os
-import random
 import re
 import shlex
 import subprocess
 import sys
+import time
 import tomllib
 from datetime import datetime, timedelta
+from urllib.error import HTTPError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
+# TODO: Implement cache. Fetching takes too much time. Caching should be visible by
+# user by showing a message with instruction on how to ignore cache as needed. Config
+# option for this would also be quite nice
 # TODO: Proper config parser module which will check for required fields and print
 # warnings like for case where recomended value is not set
 # Also invalid values should have proper error description rather than just exceptions
-# TODO: Replace pycountry with single variable containing needed currencies
 from pycountry import currencies
 
 Currency = list(currencies)[0].__class__
@@ -45,9 +48,9 @@ def get_api_key():
     config_command = config.get("api_key_command")
     if command := (os.getenv("MONO2LEDGER_API_KEY_COMMAND") or config_command):
         proc = subprocess.Popen(
-            shlex.split(command), stdount=subprocess.PIPE, stderr=subprocess.PIPE
+            shlex.split(command), stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
-        stdout, stderr = proc.communcate()
+        stdout, stderr = proc.communicate()
         if proc.returncode != 0:
             raise ValueError(
                 "Command to obtain API key failed with"
@@ -175,7 +178,7 @@ class Account(JSONObject):
             )
         intervals = []
         if (to_time - from_time).days <= 30:
-            intervals += [from_time, to_time]
+            intervals.append([from_time, to_time])
         else:
             current_interval = to_time - from_time
             current_time = from_time
@@ -184,28 +187,26 @@ class Account(JSONObject):
                 # This can do requests with current timestampt in the future but API
                 # does not seem to care and neither do I
                 interval = current_time + timedelta(days=30)
-                intervals += [current_time, interval]
+                intervals.append([current_time, interval])
                 current_interval -= 30
                 current_time = interval
 
-        with open("./statements.json", "rb") as f:
-            statements = json.load(f)[self.id]
-        # for from_time, to_time in intervals:
-        # url = (
-        #     f"{ENDPOINT}/personal/statement"
-        #     f"/{self.id}"
-        #     f"/{from_time.timestamp()}"
-        #     f"/{to_time.timestamp()}"
-        # )
-        # TODO: Handle case where there are more than 500 entries and API truncates
-        # them
-        # TODO: Make sure to throttle this to one request per 60 seconds
-        # response = requests.get(url, headers={"X-Token": api_key})
-        # response.raise_for_status()
-
-        # for statement in response.json():
-        for statement in statements:
-            self._statements.append(StatementItem(statement, account=self))
+        for from_time, to_time in intervals:
+            try:
+                response = fetch(
+                    "/personal/statement"
+                    f"/{self.id}"
+                    f"/{int(from_time.timestamp())}"
+                    f"/{int(to_time.timestamp())}"
+                )
+                # TODO: Better error handler - in particular throttling should be
+                # handled well
+            except HTTPError as e:
+                print(e.read().decode())
+                raise e
+            # TODO: Handle case where there are no statements returned
+            for statement in response:
+                self._statements.append(StatementItem(statement, account=self))
 
     @property
     def statements(self):
@@ -238,30 +239,38 @@ def get_last_transaction_date(file):
     Return date of the last ledger transaction in file.
     """
     pattern = re.compile(r"\d{4}[/|-]\d{2}[/|-]\d{2}")
+    # No way to match multiline comments but eh, unless someone requests it it is
+    # hledger-only feature anyway
+    comment_pattern = re.compile(r"^\s*[;#*]+")
     result = None
+    inside_comment = False
     for line in file.readlines():
-        if match := pattern.findall(line):
+        # Exclude hledger multi-line comments
+        if not inside_comment and line == "comment\n":
+            inside_comment = True
+        elif inside_comment and line == "end comment\n":
+            inside_comment = False
+        if (
+            not inside_comment
+            and not comment_pattern.match(line)
+            and (match := pattern.findall(line))
+        ):
             result = match[0]
     if not result:
+        # TODO: Descriptive error
         raise ValueError
 
     return datetime.strptime(result, ledger_date_format)
 
 
 def fetch_accounts() -> list[Account]:
-    # TODO: This should prefetch statements
-    with open("./clientinfo.json", "rb") as f:
-        return [
-            Account(account)
-            for account in json.load(f)["accounts"]
-            if account["id"] not in config["ignored_accounts"]
-        ]
-    # url = f"{endpoint}/personal/client-info"
-    # result = requests.get(url, headers={"X-Token": api_key})
-    # if result.status_code != 200:
-    #     raise ValueError(result.json())
+    response = fetch("/personal/client-info")
 
-    # return [Account.from_json(account) for account in result.json()['accounts']]
+    return [
+        Account(account)
+        for account in response["accounts"]
+        if account["id"] not in config["ignored_accounts"]
+    ]
 
 
 if __name__ == "__main__":
@@ -277,11 +286,13 @@ if __name__ == "__main__":
 
     accounts = fetch_accounts()
     for account in accounts:
-        # TODO: Add indication that we are waiting
+        # TODO: Add indication that we are waiting. Just printing is kinda ugly
+        # ngl, I want something better than this for loop
         account.fetch_statements(from_time=last_transaction_date, to_time=now)
-
-    card_ibans = [account.iban for account in accounts]
-    linked_transaction_ids: set[str] = set()
+        print(f"Fetched statement for {account.id}. Waiting 60 seconds for throttle")
+        # TODO: Is there a cleaner way to do the same thing without accessing list?
+        if account != accounts[-1]:
+            time.sleep(60)
 
     def get_matching_account(**kwargs):
         return next(
@@ -326,6 +337,12 @@ if __name__ == "__main__":
         # TODO: get_to_account which will return appropriate account for expense
         # transaction. Make sure to take into account that there are not only expenses
 
+        def int_if_no_decimal(num: float) -> int | float:
+            """
+            Convert num to integer if it's decimal point == 0 else return it unmodified
+            """
+            return int(num) if num % 1 == 0.0 else num
+
         exchange_amount = None
         exchange_currency = None
         if source_statement:
@@ -337,13 +354,18 @@ if __name__ == "__main__":
                 exchange_amount = source_statement.amount
                 exchange_currency = source_statement.account.currency
         else:
-            payee = f"foobar - {statement.description}"
+            payee = f"{statement.description}"
             from_account = config["account"][statement.account.id]["name"]
-            to_account = f"statement:{statement.id}"
+            to_account = f"statement_id:{statement.id}"
             amount = -statement.amount
             if statement.amount != statement.operation_amount:
                 exchange_amount = statement.amount
                 exchange_currency = statement.currency
+
+        if statement.is_receive:
+            to_account, from_account = from_account, to_account
+            amount = -amount
+            exchange_amount = -exchange_amount
 
         exchange = (
             f" @@ {-exchange_amount} {exchange_currency.alpha_3}"
@@ -351,6 +373,8 @@ if __name__ == "__main__":
             else ""
         )
 
+        # TODO: Trim zero does not have signed digits
+        # TODO: When the transaction is income swap recepiend and from account
         return (
             f"{statement.time.strftime(ledger_date_format)} {payee}\n"
             f"\t{to_account:60} {amount:8} {statement.account.currency.alpha_3}"
@@ -359,7 +383,6 @@ if __name__ == "__main__":
         )
 
     def find_source(statement):
-        # IT WORKS
         if statement.mcc == TRANSFER_MCC:
             if statement.is_send:
                 filters = {"from_time": statement.time - timedelta(minutes=5)}
@@ -372,13 +395,14 @@ if __name__ == "__main__":
                 "operation_amount": -statement.operation_amount,
             }
 
-            account = (
+            if account := (
                 statement.account if statement.is_send else guess_account(statement)
-            )
-
-            matched_statement = next(account.filter_statements(**filters), statement)
-            if matched_statement != statement:
-                return find_source(matched_statement)
+            ):
+                matched_statement = next(
+                    account.filter_statements(**filters), statement
+                )
+                if matched_statement != statement:
+                    return find_source(matched_statement)
         return statement
 
     def get_source(statement):
@@ -394,24 +418,11 @@ if __name__ == "__main__":
     normal_statements = []
 
     for statement in statements:
-        # TODO: Source and destination are different. For destination I always just want
-        # to follow iban/description to card. For source I want to inspect title and
-        # previous statements and if some of previous statements are a source of this
-        # one return it else return None or same statement
-        # print("s:", statement)
-        # print("d:", find_source(statement, statement.account))
         account = guess_account(statement)
         source = find_source(statement)
         if source != statement:
             # Due to the way statements are sorted we know that the next matching
             # statement is the destination, and the source is always the same
-            # TODO: The reason this does not work is because for fop->black transaction
-            # there is an intermediate transaction. So the algorithm then is that
-            # black-<uah-fop and uah-fop->black is matched but intermediate transaction
-            # to transfer money to UAH fop is matched with fop transaction and so
-            # is neither is present in cross_card_statements list so if check fails
-            # and results in two cross_card_statement items for each real transfer
-            # The solution is probably to cHck amounts in combination with this presense
             if result := next(
                 filter(
                     lambda x: source in x[1] or statement in x[1],
