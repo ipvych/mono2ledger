@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
 import argparse
+import io
 import itertools
 import json
 import os
@@ -8,145 +8,84 @@ import shlex
 import subprocess
 import sys
 import time
-import tomllib
 from datetime import datetime, timedelta
+from functools import lru_cache
+from pathlib import Path
+from typing import Optional, TextIO
 from urllib.error import HTTPError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
+import yaml
+
 # TODO: Implement cache. Fetching takes too much time. Caching should be visible by
 # user by showing a message with instruction on how to ignore cache as needed. Config
 # option for this would also be quite nice
-# TODO: Proper config parser module which will check for required fields and print
-# warnings like for case where recomended value is not set
-# Also invalid values should have proper error description rather than just exceptions
 from pycountry import currencies
+
+from .cli import err, warn
+from .config import ConfigModel
 
 Currency = list(currencies)[0].__class__
 
-
-ENDPOINT = "https://api.monobank.ua"
-# TODO: Dates should be taken from config with defaults set here
-# Date format used by ledger
-
-# Datetime format used in header
-HEADER_DATETIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 TRANSFER_MCC = 4829
+now = datetime.now()
 
 
-def get_config():
-    """Return parsed content of config file."""
-    config_file = os.path.join(
-        os.getenv("XDG_CONFIG_HOME", os.path.expanduser("~/.config")),
-        "mono2ledger/config.toml",
-    )
-    with open(config_file, "rb") as file:
-        return tomllib.load(file)
+@lru_cache
+def get_config() -> ConfigModel:
+    config_dir = os.getenv("XDG_CONFIG_HOME", "~/.config")
+    config_file = Path(config_dir, "mono2ledger/config.yaml").expanduser()
+    with config_file.open("rb") as file:
+        return ConfigModel(yaml.load(file, Loader=yaml.Loader))
 
 
-def get_api_key():
-    config_command = config.get("api_key_command")
+@lru_cache
+def get_api_key(config: ConfigModel) -> str:
+    config_command = config.settings.api_key_command
     if command := (os.getenv("MONO2LEDGER_API_KEY_COMMAND") or config_command):
         proc = subprocess.Popen(
             shlex.split(command), stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
         stdout, stderr = proc.communicate()
         if proc.returncode != 0:
-            raise ValueError(
-                "Command to obtain API key failed with"
-                f" stdout='{stdout}', stderr='{stderr}'"
-            )
+            err("Could not retrieve API key using provided command.")
         return stdout.decode().split("\n")[0]
 
 
-config = get_config()
-api_key = get_api_key()
-ledger_date_format = config.get("ledger_date_format", "%Y/%m/%d")
-
-
-def fetch(endpoint):
+def fetch(endpoint: str) -> dict:
     url = urljoin("https://api.monobank.ua", endpoint)
-    request = Request(url, headers={"X-Token": api_key})
+    request = Request(url, headers={"X-Token": get_api_key()})
     response = urlopen(request)
     return json.load(response.fp)
 
 
-def get_attribute(self, path):
-    result = self.json
-    for key in path.split("."):
-        result = result.get(key)
-    return result
-
-
-# TODO: Can maybe be defined as variables instead of functions to make this tidier
-def json_property(path):
-    return property(lambda self: get_attribute(self, path))
-
-
-def json_amount_property(path):
-    return property(lambda self: get_attribute(self, path) / 100)
-
-
-def json_currency_property(path, kind="numeric"):
-    return property(
-        lambda self: currencies.get(**{kind: str(get_attribute(self, path))})
-    )
-
-
-def json_timestamp_property(path):
-    return property(lambda self: datetime.fromtimestamp(get_attribute(self, path)))
-
-
 class JSONObject:
-    json: dict = {}
+    json: dict
 
-    def __init__(self, _object: str | dict = None, **kwargs):
-        if _object:
-            if isinstance(_object, str):
-                self.json = json.loads(_object)
-            else:
-                self.json = _object
+    def __init__(self, json_data: str | dict | TextIO, **kwargs):
+        if isinstance(json_data, dict):
+            self.json = json_data
+        elif isinstance(json_data, io.IOBase):
+            self.json = json.load(json_data)
+        else:
+            self.json = json.loads(json_data)
 
         self.json |= kwargs
+
+    def __getattr__(self, item: str):
+        if "_" in item:
+            items = item.split("_")
+            items = [items[0]].append(x.capitalize() for x in items[1:])
+            return self.json["".join(items)]
+        return self.json[item]
 
     def __repr__(self):
         return str(self.json)
 
 
 class StatementItem(JSONObject):
-    account = None
-    id = json_property("id")
-    time = json_timestamp_property("time")
-    description = json_property("description")
-    # TODO: Figure out difference between mcc and originalMcc
-    mcc = json_property("mcc")
-    original_mcc = json_property("originalMcc")
-    currency = json_currency_property("currencyCode")
-    # Amount is the amount in card value and operationAmount is
-    # value in foreign currency if exchange is done.
-    # operationAmount == amount if currencyCode == card currencyCode
-    amount = json_amount_property("amount")
-    operation_amount = json_amount_property("operationAmount")
-    cashback = json_amount_property("cashbackAmount")
-    # Commission is only available i.e. when transfering between
-    # different banks. For now store and ignore it but for future
-    # TODO: handle commission
-    commission = json_amount_property("comissionRate")
-    # Account balance after operation
-    balance = json_amount_property("balance")
-    # See https://en.wikipedia.org/wiki/Authorization_hold
-    hold = json_property("hold")
-    # Currently unused, but in future might want to add it as a tag
-    receipt_id = json_property("receiptId")
-    # NOTE: When amount is positive this is data of sender and when it is negative this
-    # is data of receiver
-    recepient_name = json_property("counterName")
-    recepient_iban = json_property("counterIban")
-    recepient_edrpou = json_property("counterEdrpou")
-
-    def __init__(self, _object=None, account=None, **kwargs):
-        super().__init__(_object, **kwargs)
-        self.account = account
+    account: "Account" = None
 
     @property
     def is_send(self):
@@ -158,22 +97,12 @@ class StatementItem(JSONObject):
 
 
 class Account(JSONObject):
-    id = json_property("id")
-    type = json_property("type")
-    iban = json_property("iban")
-    balance = json_amount_property("balance")
-    credit_limit = json_amount_property("creditLimit")
-    currency = json_currency_property("currencyCode")
-    cashback_type = json_currency_property("cashbackType", "alpha_3")
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._statements = []
+    _statements: Optional[list] = None
 
     def fetch_statements(self, from_time: datetime, to_time: datetime):
-        if self._statements:
+        if self._statements is not None:
             raise ValueError(
-                "Statements were already fetched."
+                "Statements are already fetched."
                 " Fetching multiple times with different dates is not supported"
             )
         intervals = []
@@ -210,15 +139,19 @@ class Account(JSONObject):
 
     @property
     def statements(self):
-        if not self._statements:
-            raise ValueError("You need to fetch statements first")
+        if self._statements is None:
+            raise ValueError(
+                "You need to fetch statements by calling 'fetch_statements' first"
+            )
         return self._statements
 
     def filter_statements(
         self, from_time: datetime = None, to_time: datetime = None, **kwargs
     ):
-        if not self._statements:
-            raise ValueError("You need to fetch statements first")
+        if self._statements is None:
+            raise ValueError(
+                "You need to fetch statements by calling 'fetch_statements' first"
+            )
 
         def matcher(x):
             predicates: list[bool] = [
@@ -234,16 +167,14 @@ class Account(JSONObject):
         return filter(matcher, self._statements)
 
 
-def get_last_transaction_date(file):
+def get_last_transaction_date(file: io.IOBase) -> datetime:
     """
     Return date of the last ledger transaction in file.
     """
     pattern = re.compile(r"\d{4}[/|-]\d{2}[/|-]\d{2}")
-    # No way to match multiline comments but eh, unless someone requests it it is
-    # hledger-only feature anyway
     comment_pattern = re.compile(r"^\s*[;#*]+")
-    result = None
     inside_comment = False
+    result = None
     for line in file.readlines():
         # Exclude hledger multi-line comments
         if not inside_comment and line == "comment\n":
@@ -257,30 +188,31 @@ def get_last_transaction_date(file):
         ):
             result = match[0]
     if not result:
-        # TODO: Descriptive error
-        raise ValueError
+        # TODO: Should be configurable whether to error here or only print warning
+        warn(
+            "Could not get last transaction date from file. "
+            "Fetching transactions for last 30 days"
+        )
+        return now - timedelta(30)
 
-    return datetime.strptime(result, ledger_date_format)
+    return datetime.strptime(result, get_config().settings.ledger_date_format)
 
 
 def fetch_accounts() -> list[Account]:
-    response = fetch("/personal/client-info")
-
     return [
         Account(account)
-        for account in response["accounts"]
-        if account["id"] not in config["ignored_accounts"]
+        for account in fetch("/personal/client-info")["accounts"]
+        if account["id"] not in get_config().settings.ignored_accounts
     ]
 
 
-if __name__ == "__main__":
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("input", type=argparse.FileType("r"))
     parser.add_argument("output", type=argparse.FileType("w"), nargs="?")
     args = parser.parse_args(sys.argv[-1:])
     last_transaction_date = get_last_transaction_date(args.input)
-    now = datetime.now()
-    header_datetime = now.strftime(HEADER_DATETIME_FORMAT)
+    header_datetime = now.strftime("%Y-%m-%d %H:%M:%S")
     header = f"\n;; Begin mono2ledger output\n;; Date and time: {header_datetime}\n"
     footer = ";; End mono2ledger output\n"
 
@@ -337,6 +269,8 @@ if __name__ == "__main__":
         # TODO: get_to_account which will return appropriate account for expense
         # transaction. Make sure to take into account that there are not only expenses
 
+        config = get_config()
+
         def int_if_no_decimal(num: float) -> int | float:
             """
             Convert num to integer if it's decimal point == 0 else return it unmodified
@@ -376,7 +310,7 @@ if __name__ == "__main__":
         # TODO: Trim zero does not have signed digits
         # TODO: When the transaction is income swap recepiend and from account
         return (
-            f"{statement.time.strftime(ledger_date_format)} {payee}\n"
+            f"{statement.time.strftime(config.settings.ledger_date_format)} {payee}\n"
             f"\t{to_account:60} {amount:8} {statement.account.currency.alpha_3}"
             f"{exchange}\n"
             f"\t{from_account}\n"
@@ -445,6 +379,8 @@ if __name__ == "__main__":
             else (x[0].time, x[0].amount)
         ),
     )
+    print(header)
+
     for statement in all_statements:
         if isinstance(statement, list):
             sorted_cross_card_statement = sorted(
@@ -459,4 +395,4 @@ if __name__ == "__main__":
         else:
             print(format_ledger_transaction(statement))
 
-    # print(footer)
+    print(footer)
