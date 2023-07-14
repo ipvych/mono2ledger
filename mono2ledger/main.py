@@ -76,7 +76,7 @@ class JSONObject:
     def __getattr__(self, item: str):
         if "_" in item:
             items = item.split("_")
-            items = [items[0]].append(x.capitalize() for x in items[1:])
+            items = [items[0]] + [x.capitalize() for x in items[1:]]
             return self.json["".join(items)]
         return self.json[item]
 
