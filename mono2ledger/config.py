@@ -138,12 +138,13 @@ class ConfigModel(BaseModel):
     accounts: AccountsModel = AccountsModel()
     matchers: MatchersModel = MatchersModel()
 
-    def match_account(self, account_id) -> Account:
-        """Return matching ledger name for provided account id or None"""
+    def match_account(self, account_id, default=None) -> Account:
+        """Return matching ledger account name for provided account id or default"""
         for key, value in self.accounts.items():
             if value.id == account_id:
-                return {key: value}
+                return value.ledger_account
         warn(f"Could not find matching account with id {account_id}")
+        return default
 
     def _merge_values(
         self, first: dict | MatcherValue, second: dict | MatcherValue
