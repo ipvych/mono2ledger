@@ -9,9 +9,9 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timedelta
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
-from typing import Optional, TextIO
+from typing import Iterator, Optional, TextIO
 from urllib.error import HTTPError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
@@ -23,7 +23,7 @@ import yaml
 # option for this would also be quite nice
 from pycountry import currencies
 
-from .cli import err, warn
+from .cli import err, info, warn
 from .config import ConfigModel
 
 Currency = list(currencies)[0].__class__
@@ -32,7 +32,7 @@ TRANSFER_MCC = 4829
 now = datetime.now()
 
 
-@lru_cache
+@cache
 def get_config() -> ConfigModel:
     config_dir = os.getenv("XDG_CONFIG_HOME", "~/.config")
     config_file = Path(config_dir, "mono2ledger/config.yaml").expanduser()
@@ -40,9 +40,9 @@ def get_config() -> ConfigModel:
         return ConfigModel(yaml.load(file, Loader=yaml.Loader))
 
 
-@lru_cache
-def get_api_key(config: ConfigModel) -> str:
-    config_command = config.settings.api_key_command
+@cache
+def get_api_key() -> str:
+    config_command = get_config().settings.api_key_command
     if command := (os.getenv("MONO2LEDGER_API_KEY_COMMAND") or config_command):
         proc = subprocess.Popen(
             shlex.split(command), stdout=subprocess.PIPE, stderr=subprocess.PIPE
@@ -119,7 +119,7 @@ class Account(JSONObject):
                 intervals.append([current_time, interval])
                 current_interval -= 30
                 current_time = interval
-
+        self._statements = []
         for from_time, to_time in intervals:
             try:
                 response = fetch(
@@ -133,12 +133,10 @@ class Account(JSONObject):
             except HTTPError as e:
                 print(e.read().decode())
                 raise e
-            # TODO: Handle case where there are no statements returned
-            for statement in response:
-                self._statements.append(StatementItem(statement, account=self))
+            self._statements += [StatementItem(x, account=self) for x in response]
 
     @property
-    def statements(self):
+    def statements(self) -> list[StatementItem]:
         if self._statements is None:
             raise ValueError(
                 "You need to fetch statements by calling 'fetch_statements' first"
@@ -147,7 +145,7 @@ class Account(JSONObject):
 
     def filter_statements(
         self, from_time: datetime = None, to_time: datetime = None, **kwargs
-    ):
+    ) -> Iterator[StatementItem]:
         if self._statements is None:
             raise ValueError(
                 "You need to fetch statements by calling 'fetch_statements' first"
@@ -167,7 +165,7 @@ class Account(JSONObject):
         return filter(matcher, self._statements)
 
 
-def get_last_transaction_date(file: io.IOBase) -> datetime:
+def get_last_transaction_date(file: TextIO) -> datetime:
     """
     Return date of the last ledger transaction in file.
     """
@@ -188,7 +186,6 @@ def get_last_transaction_date(file: io.IOBase) -> datetime:
         ):
             result = match[0]
     if not result:
-        # TODO: Should be configurable whether to error here or only print warning
         warn(
             "Could not get last transaction date from file. "
             "Fetching transactions for last 30 days"
@@ -210,7 +207,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("input", type=argparse.FileType("r"))
     parser.add_argument("output", type=argparse.FileType("w"), nargs="?")
-    args = parser.parse_args(sys.argv[-1:])
+    args = parser.parse_args(sys.argv[1:])
     last_transaction_date = get_last_transaction_date(args.input)
     header_datetime = now.strftime("%Y-%m-%d %H:%M:%S")
     header = f"\n;; Begin mono2ledger output\n;; Date and time: {header_datetime}\n"
