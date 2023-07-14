@@ -37,7 +37,7 @@ def get_config() -> ConfigModel:
     config_dir = os.getenv("XDG_CONFIG_HOME", "~/.config")
     config_file = Path(config_dir, "mono2ledger/config.yaml").expanduser()
     with config_file.open("rb") as file:
-        return ConfigModel(yaml.load(file, Loader=yaml.Loader))
+        return ConfigModel.model_validate(yaml.load(file, Loader=yaml.Loader))
 
 
 @cache
