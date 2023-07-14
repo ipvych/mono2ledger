@@ -1,14 +1,17 @@
+import re
 import sys
 
 
+def _trim(string: str) -> str:
+    return re.sub("( |\t){2,}", " ", string.replace("\n", " ").strip())
+
+
 def in_yellow(string):
-    _str = string.replace("\n", " ")
-    return rf"\033[33mWARNING:\033[0m {_str}"
+    return f"\033[33mWARNING:\033[0m {_trim(string)}"
 
 
 def in_red(string):
-    _str = string.replace("\n", " ")
-    return rf"\033[31mERROR:\033[0m {_str}"
+    return f"\033[31mERROR:\033[0m {_trim(string)}"
 
 
 def warn(message):

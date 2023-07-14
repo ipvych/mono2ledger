@@ -3,7 +3,14 @@ from datetime import date, datetime, time
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, FilePath, RootModel, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    FilePath,
+    RootModel,
+    field_validator,
+    model_validator,
+)
 
 from .cli import warn
 
@@ -45,9 +52,11 @@ class Account(BaseModel):
     ledger_account: str
 
 
-class AccountsModel(RootModel[dict[str, Account]]):
+class AccountsModel(RootModel):
+    root: dict[str, Account] = {}
+
     def __getattr__(self, item):
-        return self.root[item]
+        return self.root.get(item)
 
     def __getitem__(self, item):
         return self.root[item]
@@ -125,7 +134,9 @@ class Matcher(BaseModel):
     submatchers: Optional["MatchersModel"] = None
 
 
-class MatchersModel(RootModel[list[Matcher]]):
+class MatchersModel(RootModel):
+    root: list[Matcher] = []
+
     def __iter__(self):
         return iter(self.root)
 
@@ -134,9 +145,9 @@ class MatchersModel(RootModel[list[Matcher]]):
 
 
 class ConfigModel(BaseModel):
-    settings: SettingsModel = SettingsModel()
-    accounts: AccountsModel = AccountsModel()
-    matchers: MatchersModel = MatchersModel()
+    settings: SettingsModel = Field(default_factory=lambda: SettingsModel())
+    accounts: AccountsModel = Field(default_factory=lambda: AccountsModel())
+    matchers: MatchersModel = Field(default_factory=lambda: MatchersModel())
 
     def match_account(self, account_id, default=None) -> Account:
         """Return matching ledger account name for provided account id or default"""
