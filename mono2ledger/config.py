@@ -171,7 +171,7 @@ class ConfigModel(BaseModel):
     def _match_statement(
         self,
         # TODO: Fix ruff warning that annotation is invalid
-        statement: "Statement",
+        statement: "StatementItem",
         matchers: list[Matcher],
         _current_value: dict | MatcherValue,
     ) -> MatcherValue:
@@ -179,8 +179,14 @@ class ConfigModel(BaseModel):
             predicate = matcher.predicate
             if (
                 (predicate.mcc and statement.mcc in predicate.mcc)
-                or (predicate.from_time and statement.time >= predicate.from_time)
-                or (predicate.to_time and statement.time <= predicate.to_time)
+                or (
+                    predicate.from_time
+                    and statement.time >= predicate.from_time.timestamp()
+                )
+                or (
+                    predicate.to_time
+                    and statement.time <= predicate.to_time.timestamp()
+                )
                 or (
                     predicate.description
                     and re.match(predicate.description, statement.description)
@@ -205,5 +211,5 @@ class ConfigModel(BaseModel):
         no matcher is found with values to override provided ones.
         """
         return self._match_statement(
-            statement, self.matchers, default_value if default_value else {}
+            statement, self.matchers, default_value if default_value else MatcherValue()
         )
