@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timedelta
 from functools import cache
 from pathlib import Path
-from typing import Optional, TextIO
+from typing import Iterator, Optional, TextIO
 from urllib.error import HTTPError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
@@ -48,13 +48,6 @@ def get_api_key() -> str:
         if proc.returncode != 0:
             err("Could not retrieve API key using provided command.")
         return stdout.decode().split("\n")[0]
-
-
-def fetch(endpoint: str) -> dict:
-    url = urljoin("https://api.monobank.ua", endpoint)
-    request = Request(url, headers={"X-Token": get_api_key()})
-    response = urlopen(request)
-    return json.load(response.fp)
 
 
 class JSONObject:
@@ -125,12 +118,17 @@ def get_last_transaction_date(file: TextIO, default=None) -> datetime:
     return default
 
 
+def fetch(endpoint: str) -> dict:
+    url = urljoin("https://api.monobank.ua", endpoint)
+    request = Request(url, headers={"X-Token": get_api_key()})
+    response = urlopen(request)
+    return json.load(response.fp)
+
+
 def fetch_accounts() -> list[Account]:
-    with open("./clientinfo.json") as f:
-        response = json.load(f)["accounts"]
     return [
         Account(account)
-        for account in response  # fetch("/personal/client-info")["accounts"]
+        for account in fetch("/personal/client-info")["accounts"]
         if account["id"] not in get_config().settings.ignored_accounts
     ]
 
@@ -154,17 +152,16 @@ def fetch_statements(
             current_time = interval
 
     datefmt = "%Y-%m-%d"
-    for account, interval in itertools.product(accounts, intervals):
+    combinations = list(itertools.product(accounts, intervals))
+    for account, interval in combinations:
         from_time, to_time = interval
         try:
-            # response = fetch(
-            #     "/personal/statement"
-            #     f"/{self.id}"
-            #     f"/{int(from_time.timestamp())}"
-            #     f"/{int(to_time.timestamp())}"
-            # )
-            with open("./statements.json") as f:
-                response = json.load(f)[account.id]
+            response = fetch(
+                "/personal/statement"
+                f"/{account.id}"
+                f"/{int(from_time.timestamp())}"
+                f"/{int(to_time.timestamp())}"
+            )
             # TODO: Better error handler - in particular throttling should be
             # handled well
         except HTTPError as e:
@@ -176,15 +173,23 @@ def fetch_statements(
         info(
             f"Fetched statements for account {account.id}"
             f" from {from_time.strftime(datefmt)} to {to_time.strftime(datefmt)}."
-            " Waiting 60 seconds to obey API rate limit"
         )
-        # time.sleep(60)
+        if (account, interval) != combinations[-1]:
+            info(
+                "Waiting 60 seconds before fetching another statement"
+                " to obey API rate limit."
+            )
+            time.sleep(60)
 
 
 def get_ledger_account_for_account(account: Account) -> str:
-    # TODO: Default value should be configurable here, maybe, at the very least
-    # i would like to define const somewhere else
-    return get_config().match_account(account.id, f"Assets:Mono2ledger:{account.id}")
+    match = get_config().match_account(account.id)
+    if not match:
+        warn(
+            "Could not find matching account definition for account with id", account.id
+        )
+        return f"Assets:Mono2ledger:{account.id}"
+    return match
 
 
 def format_transaction(
@@ -199,19 +204,17 @@ def format_transaction(
 ) -> str:
     config = get_config()
 
-    def format_amount(amount, pad=True):
+    def format_amount(amount: float, pad: bool = True) -> str:
         if config.settings.trim_leading_zeroes and amount % 1 == 0:
             return f"{int(amount):8}" if pad else str(int(amount))
-        return f"{int(amount):8.2f}" if pad else f"{int(amount):.2f}"
+        return f"{amount:8.2f}" if pad else f"{amount:.2f}"
 
     if amount < 0:
         to_account, from_account = from_account, to_account
         amount = -amount
-        if exchange_amount:
-            exchange_amount = -exchange_amount
 
     exchange = (
-        f" @@ {format_amount(exchange_amount, pad=False)} {exchange_currency}"
+        f" @@ {format_amount(-exchange_amount, pad=False)} {exchange_currency}"
         if exchange_amount and exchange_currency
         else ""
     )
@@ -287,7 +290,7 @@ def main():
     accounts = fetch_accounts()
 
     def is_cross_card_statement(statement: StatementItem) -> bool:
-        # 4829 seems to be the MCC mono uses for card transfers
+        # 4829 is the MCC mono uses for card transfers
         if statement.mcc != 4829:
             return False
         if counter_iban := statement.get("counter_iban"):
@@ -302,28 +305,35 @@ def main():
             has_currency = True
         return has_card_type or has_currency
 
-    statements = sorted(
-        fetch_statements(accounts, last_transaction_date, now),
-        key=lambda x: (x.time, x.amount),
-        reverse=True,
-    )
+    def create_ledger_entries(statements: list[StatementItem]) -> Iterator[str]:
+        """
+        Given list of statements sort them by chronological order from newest to latest
+        and yield ledger entry for each one with taking cross card statements into
+        account by grouping them into single statement.
 
-    statements = iter(statements)
+        Note that because of ordering before displaying returned value it needs to be
+        reversed first.
+        """
+        statements = sorted(statements, key=lambda x: (x.time, x.amount), reverse=True)
+        statements = iter(statements)
+        for statement in statements:
+            if is_cross_card_statement(statement):
+                current_statement = statement
+                while (
+                    (next_statement := next(statements, None))
+                    and current_statement.operation_amount
+                    == -next_statement.operation_amount
+                    and current_statement.currency_code == next_statement.currency_code
+                    and current_statement.mcc == next_statement.mcc
+                ):
+                    current_statement = next_statement
+                yield format_ledger_transaction(statement, current_statement)
+            else:
+                yield format_ledger_transaction(statement)
+
+    statements = fetch_statements(accounts, last_transaction_date, now)
+    ledger_entries = list(create_ledger_entries(statements))
 
     print(header)
-    for statement in statements:
-        if is_cross_card_statement(statement):
-            current_statement = statement
-            while (
-                (next_statement := next(statements, None))
-                and current_statement.operation_amount
-                == -next_statement.operation_amount
-                and current_statement.currency_code == next_statement.currency_code
-                and current_statement.mcc == next_statement.mcc
-            ):
-                current_statement = next_statement
-            print(format_ledger_transaction(statement, current_statement))
-        else:
-            print(format_ledger_transaction(statement))
-
+    print("\n".join(reversed(ledger_entries)))
     print(footer)

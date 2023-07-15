@@ -14,14 +14,14 @@ def in_red(string):
     return f"\033[31mERROR:\033[0m {_trim(string)}"
 
 
-def warn(message):
-    print(in_yellow(message), file=sys.stderr)
+def warn(*strings):
+    print(*map(in_yellow, strings), file=sys.stderr)
 
 
-def err(message):
+def err(*strings):
     # NOTE 2023-07-08: See comment in periodexpr parser
-    exit(in_red(message))
+    exit(in_red(" ".join(strings)))
 
 
-def info(message):
-    print(message, file=sys.stderr)
+def info(*strings):
+    print(*strings, file=sys.stderr)
