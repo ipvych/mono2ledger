@@ -13,8 +13,6 @@ from pydantic import (
     model_validator,
 )
 
-from .cli import warn
-
 # TODO: Can doc be generated from pydantic models?
 
 
@@ -41,7 +39,7 @@ class SettingsModel(BaseModel):
     def check_ignored_accounts(cls, model: "SettingsModel"):
         provided_fields = model.model_fields_set
         if "ignored_accounts" not in provided_fields:
-            warn(
+            logging.warning(
                 """
                 Ignored accounts are not set in config. It is recommended to set them
                 so statements for unused accounts are not fetched and import is faster.
@@ -159,7 +157,7 @@ class ConfigModel(BaseModel):
         for key, value in self.accounts.items():
             if value.id == account_id:
                 return value.ledger_account
-        warn(f"Could not find matching account with id {account_id}")
+        logging.warning(f"Could not find matching account with id {account_id}")
         return default
 
     def _merge_values(
