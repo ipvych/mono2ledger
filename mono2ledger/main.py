@@ -279,7 +279,7 @@ def setup_logging(level: str) -> None:
     logging.getLogger().setLevel(level)
 
 
-def main():
+def _main():
     parser = argparse.ArgumentParser(prog="mono2ledger")
     parser.add_argument("input", type=argparse.FileType("r"))
     parser.add_argument("output", type=argparse.FileType("w"), nargs="?")
@@ -357,3 +357,12 @@ def main():
     print(header)
     print("\n".join(reversed(ledger_entries)))
     print(footer)
+
+
+def main():
+    try:
+        _main()
+    except KeyboardInterrupt as e:
+        exit("Received interrupt, exiting")
+        if logging.getLogger().level <= logging.DEBUG:
+            raise e
