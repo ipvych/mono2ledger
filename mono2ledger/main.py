@@ -24,7 +24,7 @@ import yaml
 # option for this would also be quite nice
 from pycountry import currencies
 
-from .cli import err, info, warn
+from .cli import err
 from .config import ConfigModel, MatcherValue
 
 Currency = list(currencies)[0].__class__
@@ -189,7 +189,7 @@ def fetch_statements(
 def get_ledger_account_for_account(account: Account) -> str:
     match = get_config().match_account(account.id)
     if not match:
-        warn(
+        logging.warning(
             "Could not find matching account definition for account with id", account.id
         )
         return f"Assets:Mono2ledger:{account.id}"
