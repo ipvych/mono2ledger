@@ -25,6 +25,10 @@ class SettingsModel(BaseModel):
     transfer_payee: Optional[str] = "Transfer"
     api_key_command: Optional[str] = None
     trim_leading_zeroes: bool = True
+    record_cashback: bool = True
+    cashback_payee: str = "Cashback"
+    cashback_ledger_asset_account: str = "Assets:Mono2ledger:Cashback"
+    cashback_ledger_income_account: str = "Income:Mono2ledger:Cashback"
 
     @field_validator("ledger_file", mode="before")
     def expand_ledger_file_path(cls, value: str):
@@ -38,8 +42,8 @@ class SettingsModel(BaseModel):
         provided_fields = model.model_fields_set
         if "ignored_accounts" not in provided_fields:
             warn(
-                """\
-                Ignored accounts are not defined. It is recommended to set them
+                """
+                Ignored accounts are not set in config. It is recommended to set them
                 so statements for unused accounts are not fetched and import is faster.
                 If this is intended then this warning can be suppressed by setting value
                 of 'ignored_accounts' to empty list in config.
