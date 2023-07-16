@@ -127,9 +127,11 @@ def fetch(endpoint: str) -> dict:
 
 
 def fetch_accounts() -> list[Account]:
+    response = fetch("/personal/client-info")
+    logging.debug(f"Fetched accounts with response {response}")
     return [
         Account(account)
-        for account in fetch("/personal/client-info")["accounts"]
+        for account in response["accounts"]
         if account["id"] not in get_config().settings.ignored_accounts
     ]
 
