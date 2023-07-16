@@ -1,3 +1,4 @@
+import logging
 import re
 from datetime import date, datetime, time
 from pathlib import Path
@@ -198,7 +199,13 @@ class ConfigModel(BaseModel):
                         statement, matcher.submatchers, current_value
                     )
                 else:
+                    logging.debug(
+                        f"Statement {statement} was matched with value {current_value}"
+                    )
                     return current_value
+        logging.debug(
+            f"Statement {statement} was matched with value {_current_value}",
+        )
         return _current_value
 
     def match_statement(

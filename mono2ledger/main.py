@@ -2,6 +2,7 @@ import argparse
 import io
 import itertools
 import json
+import logging
 import os
 import re
 import shlex
@@ -167,8 +168,9 @@ def fetch_statements(
         except HTTPError as e:
             print(e.read().decode())
             raise e
-        # TODO: Need to sleep when there are multiple intervals to not hit rate
-        # limits
+        logging.debug(
+            f"Fetched statement for account {account} with response being {response}"
+        )
         yield from (StatementItem(x, account=account) for x in response)
         info(
             f"Fetched statements for account {account.id}"
@@ -272,11 +274,19 @@ def format_ledger_transaction(
     )
 
 
+def setup_logging(level: str) -> None:
+    logging.basicConfig(format="%(levelname)s: %(message)s")
+    logging.getLogger().setLevel(level)
+
+
 def main():
     parser = argparse.ArgumentParser(prog="mono2ledger")
     parser.add_argument("input", type=argparse.FileType("r"))
     parser.add_argument("output", type=argparse.FileType("w"), nargs="?")
+    parser.add_argument("-l", "--log_level", type=str, required=False, default="INFO")
     args = parser.parse_args(sys.argv[1:])
+
+    setup_logging(args.log_level)
 
     now = datetime.now()
     last_transaction_date = get_last_transaction_date(
