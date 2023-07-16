@@ -314,19 +314,29 @@ def main():
         Note that because of ordering before displaying returned value it needs to be
         reversed first.
         """
+
+        def get_next(lst, index):
+            try:
+                return lst[index + 1]
+            except IndexError:
+                return None
+
         statements = sorted(statements, key=lambda x: (x.time, x.amount), reverse=True)
-        statements = iter(statements)
-        for statement in statements:
+        for index, statement in enumerate(statements):
             if is_cross_card_statement(statement):
                 current_statement = statement
+                next_statement = get_next(statements, index)
                 while (
-                    (next_statement := next(statements, None))
+                    next_statement
                     and current_statement.operation_amount
                     == -next_statement.operation_amount
                     and current_statement.currency_code == next_statement.currency_code
                     and current_statement.mcc == next_statement.mcc
                 ):
                     current_statement = next_statement
+                    del statements[index + 1]
+                    next_statement = get_next(statements, index)
+
                 yield format_ledger_transaction(statement, current_statement)
             else:
                 yield format_ledger_transaction(statement)
