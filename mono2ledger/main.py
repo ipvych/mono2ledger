@@ -171,7 +171,7 @@ def fetch_statements(
             print(e.read().decode())
             raise e
         logging.debug(
-            f"Fetched statement for account {account} with response being {response}"
+            f"Fetched statement for account {account} with response {response}"
         )
         yield from (StatementItem(x, account=account) for x in response)
         info(
@@ -196,44 +196,18 @@ def get_ledger_account_for_account(account: Account) -> str:
     return match
 
 
-def format_transaction(
-    date: datetime,
-    payee: str,
-    from_account: str,
-    to_account: str,
-    amount: float,
-    currency: str,
-    exchange_amount: float,
-    exchange_currency: str,
-) -> str:
-    config = get_config()
+def format_ledger_transaction(
+    statement: StatementItem, source_statement: Optional[StatementItem] = None
+) -> Iterator[str]:
+    """Yield ledger transactions for statement that possibly came from source"""
 
     def format_amount(amount: float, pad: bool = True) -> str:
+        amount = amount / 100
         if config.settings.trim_leading_zeroes and amount % 1 == 0:
             return f"{int(amount):8}" if pad else str(int(amount))
         return f"{amount:8.2f}" if pad else f"{amount:.2f}"
 
-    if amount < 0:
-        to_account, from_account = from_account, to_account
-        amount = -amount
-
-    exchange = (
-        f" @@ {format_amount(-exchange_amount, pad=False)} {exchange_currency}"
-        if exchange_amount and exchange_currency
-        else ""
-    )
-
-    return (
-        f"{date.strftime(config.settings.ledger_date_format)} {payee}\n"
-        f"\t{to_account:60} {format_amount(amount)} {currency}"
-        f"{exchange}\n"
-        f"\t{from_account}\n"
-    )
-
-
-def format_ledger_transaction(
-    statement: StatementItem, source_statement: Optional[StatementItem] = None
-) -> str:
+    config = get_config()
     exchange_amount = None
     exchange_currency = None
     if source_statement:
@@ -242,7 +216,7 @@ def format_ledger_transaction(
         from_account = source_statement.account
         amount = statement.amount
         if source_statement.amount != source_statement.operation_amount:
-            exchange_amount = source_statement.amount / 100
+            exchange_amount = source_statement.amount
             exchange_currency = currencies.get(
                 numeric=str(source_statement.account.currency_code)
             ).alpha_3
@@ -257,23 +231,45 @@ def format_ledger_transaction(
         )
         amount = -statement.amount
         if statement.amount != statement.operation_amount:
-            exchange_amount = statement.amount / 100
+            exchange_amount = statement.amount
             exchange_currency = currencies.get(
                 numeric=str(statement.currency_code)
             ).alpha_3
 
     from_account = get_ledger_account_for_account(from_account)
     currency = currencies.get(numeric=str(statement.currency_code)).alpha_3
-    return format_transaction(
-        datetime.fromtimestamp(statement.time),
-        payee,
-        from_account,
-        to_account,
-        amount / 100,
-        currency,
-        exchange_amount,
-        exchange_currency,
+    if amount < 0:
+        to_account, from_account = from_account, to_account
+        amount = -amount
+        if exchange_amount:
+            exchange_amount = -exchange_amount
+
+    transaction_date = datetime.fromtimestamp(statement.time).strftime(
+        config.settings.ledger_date_format
     )
+
+    exchange = (
+        f" @@ {format_amount(-exchange_amount, pad=False)} {exchange_currency}"
+        if exchange_amount and exchange_currency
+        else ""
+    )
+
+    yield (
+        f"{transaction_date} {payee}\n"
+        f"\t{to_account:60} {format_amount(amount)} {currency} {exchange}\n"
+        f"\t{from_account}"
+    )
+
+    if config.settings.record_cashback and (
+        cashback_amount := statement.cashback_amount
+    ):
+        cashback_type = statement.account.cashback_type
+        yield (
+            f"{transaction_date} {config.settings.cashback_payee}\n"
+            f"\t{config.settings.cashback_ledger_asset_account:60}"
+            f" {format_amount(cashback_amount)} {cashback_type}\n"
+            f"\t{config.settings.cashback_ledger_income_account}"
+        )
 
 
 def setup_logging(level: str) -> None:
@@ -294,10 +290,6 @@ def _main():
     last_transaction_date = get_last_transaction_date(
         args.input, now - timedelta(days=30)
     )
-
-    header_datetime = now.strftime("%Y-%m-%d %H:%M:%S")
-    header = f"\n;; Begin mono2ledger output\n;; Date and time: {header_datetime}\n"
-    footer = ";; End mono2ledger output\n"
 
     accounts = fetch_accounts()
 
@@ -349,15 +341,23 @@ def _main():
                     del statements[index + 1]
                     next_statement = get_next(statements, index)
 
-                yield format_ledger_transaction(statement, current_statement)
+                # Yield from reversed because list will get reversed again messing up
+                # order returned by format_ledger_transaction...
+                yield from reversed(
+                    list(format_ledger_transaction(statement, current_statement))
+                )
             else:
-                yield format_ledger_transaction(statement)
+                yield from reversed(list(format_ledger_transaction(statement)))
 
     statements = fetch_statements(accounts, last_transaction_date, now)
     ledger_entries = list(create_ledger_entries(statements))
 
+    header_datetime = now.strftime("%Y-%m-%d %H:%M:%S")
+    header = f"\n;; Begin mono2ledger output\n;; Date and time: {header_datetime}\n"
+    footer = "\n;; End mono2ledger output\n"
+
     print(header)
-    print("\n".join(reversed(ledger_entries)))
+    print("\n\n".join(reversed(ledger_entries)))
     print(footer)
 
 
