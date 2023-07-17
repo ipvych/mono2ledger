@@ -19,10 +19,6 @@ from urllib.request import Request, urlopen
 
 import yaml
 from dateutil.relativedelta import relativedelta
-
-# TODO: Implement cache. Fetching takes too much time. Caching should be visible by
-# user by showing a message with instruction on how to ignore cache as needed. Config
-# option for this would also be quite nice
 from pycountry import currencies
 
 from .config import ConfigModel, MatcherValue
