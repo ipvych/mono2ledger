@@ -18,6 +18,7 @@ from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
 import yaml
+from dateutil.relativedelta import relativedelta
 
 # TODO: Implement cache. Fetching takes too much time. Caching should be visible by
 # user by showing a message with instruction on how to ignore cache as needed. Config
@@ -136,54 +137,63 @@ def fetch_accounts() -> list[Account]:
     ]
 
 
+def date_range(
+    start: datetime, end: datetime, interval: timedelta | relativedelta
+) -> Iterator[tuple[datetime, datetime]]:
+    delta = end - start
+    if delta.days > 30:
+        yield from date_range(start, end - interval, interval)
+    yield end - delta, end
+
+
 def fetch_statements(
     accounts: list[Account], from_time: datetime, to_time: datetime
 ) -> list[StatementItem]:
-    intervals = []
-    if (to_time - from_time).days <= 30:
-        intervals.append((from_time, to_time))
-    else:
-        current_interval = to_time - from_time
-        current_time = from_time
-        # TODO: These is probably a nicer way to do this with recursion
-        while current_interval.days > 30:
-            # This can do requests with current timestampt in the future but API
-            # does not seem to care and neither do I
-            interval = current_time + timedelta(days=30)
-            intervals.append((current_time, interval))
-            current_interval -= 30
-            current_time = interval
-
-    datefmt = "%Y-%m-%d"
+    intervals = date_range(from_time, to_time, relativedelta(months=1))
     combinations = list(itertools.product(accounts, intervals))
     for account, interval in combinations:
-        from_time, to_time = interval
+        _from_time, _to_time = interval
         try:
             response = fetch(
                 "/personal/statement"
                 f"/{account.id}"
-                f"/{int(from_time.timestamp())}"
-                f"/{int(to_time.timestamp())}"
+                f"/{int(_from_time.timestamp())}"
+                f"/{int(_to_time.timestamp())}"
             )
-            # TODO: Better error handler - in particular throttling should be
-            # handled well
         except HTTPError as e:
-            print(e.read().decode())
-            raise e
+            if e.code == 429:
+                logging.info(
+                    "Encountered rate limit while fetching statement for account"
+                    f" {account} from {from_time.isoformat()} to {to_time.isoformat()}."
+                    " Retrying after 60 seconds"
+                )
+                time.sleep(60)
+                yield from fetch_statements(accounts, from_time, to_time)
+            else:
+                err(
+                    "Got unexpected response when fetching statement for account "
+                    f"{account}. Response has status code {e.code} with content "
+                    f"{e.read().decode()}"
+                )
         logging.debug(
             f"Fetched statement for account {account} with response {response}"
         )
-        yield from (StatementItem(x, account=account) for x in response)
-        info(
+        logging.info(
             f"Fetched statements for account {account.id}"
-            f" from {from_time.strftime(datefmt)} to {to_time.strftime(datefmt)}."
+            f" from {_from_time.isoformat()} to {_to_time.isoformat()}."
+            " Waiting 60 seconds before fetching another statement"
+            " to obey API rate limit."
         )
-        if (account, interval) != combinations[-1]:
-            info(
-                "Waiting 60 seconds before fetching another statement"
-                " to obey API rate limit."
-            )
-            time.sleep(60)
+        time.sleep(60)
+        if len(response) < 500:
+            yield from (StatementItem(x, account=account) for x in response)
+        else:
+            # NOTE 2023-07-16: This was never tested but in theory should work as
+            # intended
+            # TODO 2023-07-16: Actually test this with unit test
+            period = timedelta(days=(_from_time - _to_time).days / 2)
+            yield from fetch_statements(accounts, _from_time, _to_time - period)
+            yield from fetch_statements(accounts, _from_time + period, _to_time)
 
 
 def get_ledger_account_for_account(account: Account) -> str:
