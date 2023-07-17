@@ -25,7 +25,6 @@ from dateutil.relativedelta import relativedelta
 # option for this would also be quite nice
 from pycountry import currencies
 
-from .cli import err
 from .config import ConfigModel, MatcherValue
 
 Currency = list(currencies)[0].__class__
@@ -48,7 +47,8 @@ def get_api_key() -> str:
         )
         stdout, stderr = proc.communicate()
         if proc.returncode != 0:
-            err("Could not retrieve API key using provided command.")
+            logging.fatal("Could not retrieve API key using provided command.")
+            exit(1)
         return stdout.decode().split("\n")[0]
 
 
@@ -170,11 +170,12 @@ def fetch_statements(
                 time.sleep(60)
                 yield from fetch_statements(accounts, from_time, to_time)
             else:
-                err(
+                logging.fatal(
                     "Got unexpected response when fetching statement for account "
                     f"{account}. Response has status code {e.code} with content "
                     f"{e.read().decode()}"
                 )
+                exit(1)
         logging.debug(
             f"Fetched statement for account {account} with response {response}"
         )
@@ -283,15 +284,34 @@ def format_ledger_transaction(
 
 
 def setup_logging(level: str) -> None:
-    logging.basicConfig(format="%(levelname)s: %(message)s")
-    logging.getLogger().setLevel(level)
+    class Formatter(logging.Formatter):
+        def format(self, record):
+            if record.levelno == logging.INFO:
+                fmt = "%(message)s"
+            else:
+                color = {
+                    logging.WARNING: 33,
+                    logging.ERROR: 31,
+                    logging.FATAL: 31,
+                    logging.DEBUG: 36,
+                }.get(record.levelno)
+                fmt = f"\033[{color}m%(levelname)s\033[0m: %(message)s"
+            formatter = logging.Formatter(fmt)
+            return formatter.format(record)
+
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(Formatter())
+    logging.root.addHandler(handler)
+    logging.root.setLevel(level)
 
 
 def _main():
     parser = argparse.ArgumentParser(prog="mono2ledger")
     parser.add_argument("input", type=argparse.FileType("r"))
     parser.add_argument("output", type=argparse.FileType("w"), nargs="?")
-    parser.add_argument("-l", "--log_level", type=str, required=False, default="INFO")
+    parser.add_argument(
+        "-l", "--log_level", type=str, required=False, default="WARNING"
+    )
     args = parser.parse_args(sys.argv[1:])
 
     setup_logging(args.log_level)
