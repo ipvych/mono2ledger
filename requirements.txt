@@ -2,3 +2,4 @@ requests
 pydantic
 pyyaml
 pycountry
+python-dateutil
