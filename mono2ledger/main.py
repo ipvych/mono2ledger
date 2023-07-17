@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import time
@@ -50,6 +51,15 @@ def get_api_key() -> str:
             logging.fatal("Could not retrieve API key using provided command.")
             exit(1)
         return stdout.decode().split("\n")[0]
+
+
+def get_connection() -> sqlite3.Connection:
+    cache_dir = os.getenv("XDG_CACHE_HOME", "~/.cache")
+    database_dir = Path(cache_dir, "mono2ledger").expanduser()
+    if not database_dir.exists():
+        database_dir.mkdir()
+    database_file = database_dir / "cache.sqlite3"
+    return sqlite3.connect(database_file)
 
 
 class JSONObject:
@@ -146,9 +156,9 @@ def date_range(
     yield end - delta, end
 
 
-def fetch_statements(
+def _fetch_statements(
     accounts: list[Account], from_time: datetime, to_time: datetime
-) -> list[StatementItem]:
+) -> Iterator[StatementItem]:
     intervals = date_range(from_time, to_time, relativedelta(months=1))
     combinations = list(itertools.product(accounts, intervals))
     for account, interval in combinations:
@@ -195,6 +205,81 @@ def fetch_statements(
             period = timedelta(days=(_from_time - _to_time).days / 2)
             yield from fetch_statements(accounts, _from_time, _to_time - period)
             yield from fetch_statements(accounts, _from_time + period, _to_time)
+
+
+def create_statement_table(connection: sqlite3.Connection):
+    return connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS statements (
+          timestamp INTEGER,
+          account_id TEXT NOT NULL,
+          data TEXT NOT NULL,
+          UNIQUE(timestamp, account_id, data)
+        )
+        """
+    )
+
+
+def record_statement(connection: sqlite3.Connection, statement: StatementItem):
+    return connection.execute(
+        "INSERT OR IGNORE INTO statements(timestamp, account_id, data) VALUES(?, ?, ?)",
+        (statement.time, statement.account.id, json.dumps(statement.json)),
+    )
+
+
+def get_latest_cached_timestamps(
+    connection: sqlite3.Connection,
+) -> tuple[datetime | None, datetime | None]:
+    sel = (
+        "SELECT timestamp FROM "
+        "(SELECT timestamp FROM statements ORDER BY timestamp {0} LIMIT 1)"
+    )
+    result = connection.execute(
+        f"{sel.format('ASC')} UNION {sel.format('DESC')}"
+    ).fetchall()
+    if len(result) == 2:
+        return [datetime.fromtimestamp(x[0]) for x in result]
+    else:
+        return (None, None)
+
+
+def retrieve_cached_statements(
+    connection: sqlite3.Connection, from_time: datetime, to_time: datetime
+):
+    yield from connection.execute(
+        """
+        SELECT timestamp, account_id, data
+        FROM statements
+        WHERE timestamp >= :from_time AND timestamp <= :to_time
+        """,
+        {"from_time": from_time.timestamp(), "to_time": to_time.timestamp()},
+    ).fetchall()
+
+
+def fetch_statements(
+    accounts: list[Account], from_time: datetime, to_time: datetime
+) -> Iterator[StatementItem]:
+    with get_connection() as conn:
+        create_statement_table(conn)
+        stored_from_time, stored_to_time = get_latest_cached_timestamps(conn)
+        if (
+            (stored_from_time and stored_to_time)
+            and from_time >= stored_from_time
+            and to_time <= stored_to_time + timedelta(days=1)
+        ):
+            logging.info("Using cached statements")
+            accs = {account.id: account for account in accounts}
+            yield from (
+                StatementItem(data, account=accs[account_id])
+                for _, account_id, data in retrieve_cached_statements(
+                    conn, from_time, to_time
+                )
+            )
+        else:
+            for statement in _fetch_statements(accounts, from_time, to_time):
+                create_statement_table(conn)
+                record_statement(conn, statement)
+                yield statement
 
 
 def get_ledger_account_for_account(account: Account) -> str:
