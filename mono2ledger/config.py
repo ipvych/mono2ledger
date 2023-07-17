@@ -202,11 +202,11 @@ class ConfigModel(BaseModel):
                     )
                 else:
                     logging.debug(
-                        f"Statement {statement} was matched with value {current_value}"
+                        f"Matched statement {statement} with value {current_value}"
                     )
                     return current_value
         logging.debug(
-            f"Statement {statement} was matched with value {_current_value}",
+            f"Matched statement {statement} with value {_current_value}",
         )
         return _current_value
 

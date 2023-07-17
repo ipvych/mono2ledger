@@ -308,13 +308,12 @@ def setup_logging(level: str) -> None:
 def _main():
     parser = argparse.ArgumentParser(prog="mono2ledger")
     parser.add_argument("input", type=argparse.FileType("r"))
-    parser.add_argument("output", type=argparse.FileType("w"), nargs="?")
     parser.add_argument(
         "-l", "--log_level", type=str, required=False, default="WARNING"
     )
     args = parser.parse_args(sys.argv[1:])
 
-    setup_logging(args.log_level)
+    setup_logging(args.log_level.upper())
 
     now = datetime.now()
     last_transaction_date = get_last_transaction_date(
