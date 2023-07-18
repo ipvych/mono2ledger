@@ -1,3 +1,4 @@
-from .main import main
+from mono2ledger.main import main
 
-main()
+if __name__ == "__main__":
+    main()

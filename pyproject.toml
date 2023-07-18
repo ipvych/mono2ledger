@@ -1,0 +1,23 @@
+[build-system]
+requires = ['setuptools']
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mono2ledger"
+authors = [
+  {name = "Ivan Popovych"}
+]
+description = "Utility to convert monobank card statement to ledger entries"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {file = "COPYING"}
+dependencies = [
+  "pydantic",
+  "pyyaml",
+  "python-dateutil",
+  "pycountry",
+]
+version = "1.0"
+
+[project.scripts]
+mono2ledger = "mono2ledger:main"
