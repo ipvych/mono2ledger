@@ -19,7 +19,7 @@ class SettingsModel(BaseModel):
     ledger_date_format: str = "%Y/%m/%d"
     ignored_accounts: list[str] = []
     ledger_file: Optional[FilePath] = None
-    transfer_payee: Optional[str] = "Transfer"
+    transfer_payee: str = "Transfer"
     api_key_command: Optional[str] = None
     trim_leading_zeroes: bool = False
     record_cashback: bool = True
@@ -72,9 +72,9 @@ class MatcherPredicate(BaseModel):
 
 
 class Matcher(BaseModel):
-    value: Optional[MatcherValue] = None
+    value: MatcherValue = MatcherValue()
     predicate: MatcherPredicate
-    submatchers: Optional["MatchersModel"] = None
+    submatchers: "MatchersModel" = []
 
 
 class MatchersModel(RootModel):
