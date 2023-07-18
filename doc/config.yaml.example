@@ -1,0 +1,82 @@
+settings:
+  # Date format used to format postings in the ledger file. Output
+  # statements will use this format as well. Default uses ledger-cli
+  # format but it can be set to "%Y-%m-%d" for example to support
+  # hledger output format
+  ledger_date_format: "%Y/%m/%d"
+  # Path to ledger file can be set here and then ommitted from future
+  # invocations of mono2ledger
+  ledger_file: "~/.local/share/ledger/journal.ledger"
+  # mono2ledger by default fetches statements for all accounts which
+  # may take quite a while to finish so this can be used to ignore
+  # accounts that are expected to not have any useful statements in
+  # them. mono2ledger will show warning when this is unset and warning
+  # can be suppressed by setting this to empty list ([])
+  ignored_accounts:
+    - "thei3oovauHoZ7Foopongoh"
+    - "zunatoh8gah8iYahj1eoGae"
+  # payee that will be set for cross-card transactions that
+  # mono2ledger detects
+  transfer_payee: "Withdraw"
+  # command that to run to obtain API key. It should print a single
+  # line stdout which will be used as api key. Note that this does not
+  # use shell so if some processing of output needed with e.g. piper
+  # or redirection then this can be set to something like
+  # "bash -c '<your command>'"
+  api_key_command: "pass show monobank"
+  # When set to true remove leading zeroes from amounts
+  # e.g. converting amounts like 100.00 to 100. Default is false
+  trim_leading_zeroes: false
+  # These options control payee, income and expense account that will
+  # be used when recording cashback
+  cashback_payee: "Free money"
+  cashback_ledger_asset_account: "Assets:Mono:Cashback"
+  cashback_ledger_income_account: "Income:Mono:Cashback"
+  # Or disable recording of cashback altogether by setting
+  # record_cashback to false
+  record_cashback: false
+# Mapping associating account id's with values used by
+# mono2ledger. Currently only value is "ledger_account" which sets the
+# name of account used when printing ledger journal entry with this
+# account.  It is recommended to quote account id's to not have to
+# deal with issues with YAML syntax when account id includes special
+# symbols
+accounts:
+  "shahquai5wiveiro3oReine":
+    ledger_account: "Assets:Mono:Black"
+  "aetah6taiphaid4eicieTh7":
+    ledger_account: "Assets:Mono:FOP"
+# Each matcher defines a predicate on how statement is matched and
+# values that will be used when printing this statement. Cross-card
+# statements do not use matchers only relying on values defined in
+# accounts.
+matchers:
+  - value:
+      # When ignore is set to true statement will not be printed
+      ignore: false
+      # ledger account to use as destination of funds
+      ledger_account: "Expences:Groceries"
+      # Payee that will be used for journal entry
+      # Default is to use statement description
+      # payee: "Groceries"
+    predicate:
+      # A list of integers to match MCC of statement
+      mcc: [5399, 5411, 5499]
+      # A regular expression to match description of statement
+      # description: ".*"
+
+    # submatchers can be defined and the way they work is that when
+    # top-level predicate matches then submatchers will be checked and
+    # if some submatcher matches then values of submatcher will be
+    # merged with those of top level by overriding them. Submatchers
+    # can contain submatchers as well with nesting depth not being
+    # limited.
+    # In this example submatchers are used to change payee of grocery
+    # shops of same chain but with different descriptions to have same
+    # payees. Note that ledger_account remains the same as it is
+    # inherited from top level matcher
+    submatchers:
+      - value:
+          payee: "Niva"
+        predicate:
+          description: "(NIVA|Нива)(27|24|3)?"
