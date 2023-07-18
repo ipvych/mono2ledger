@@ -50,33 +50,19 @@ class SettingsModel(BaseModel):
 
 
 class Account(BaseModel):
-    id: str
     ledger_account: str
 
 
 class AccountsModel(RootModel):
     root: dict[str, Account] = {}
 
-    def __getattr__(self, item):
-        return self.root.get(item)
-
     def __getitem__(self, item):
         return self.root[item]
-
-    def __iter__(self):
-        return iter(self.root)
-
-    def values(self):
-        return self.root.values()
-
-    def items(self):
-        return self.root.items()
 
 
 class MatcherValue(BaseModel):
     ignore: bool = False
     payee: Optional[str] = None  # Defaults to statementitem description
-    # TODO: Should have a sane fallback when not provided by user
     ledger_account: Optional[str] = None
 
 
@@ -106,13 +92,13 @@ class ConfigModel(BaseModel):
     accounts: AccountsModel = Field(default_factory=lambda: AccountsModel())
     matchers: MatchersModel = Field(default_factory=lambda: MatchersModel())
 
-    def match_account(self, account_id, default=None) -> Account:
+    def match_account(self, account_id: str, default=None) -> Account:
         """Return matching ledger account name for provided account id or default"""
-        for key, value in self.accounts.items():
-            if value.id == account_id:
-                return value.ledger_account
-        logging.warning(f"Could not find matching account with id {account_id}")
-        return default
+        try:
+            return self.accounts[account_id].ledger_account
+        except KeyError:
+            logging.warning(f"Could not find matching account with id {account_id}")
+            return default
 
     def _merge_values(
         self, first: dict | MatcherValue, second: dict | MatcherValue
