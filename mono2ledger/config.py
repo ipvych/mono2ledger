@@ -21,7 +21,7 @@ class SettingsModel(BaseModel):
     ledger_file: Optional[FilePath] = None
     transfer_payee: Optional[str] = "Transfer"
     api_key_command: Optional[str] = None
-    trim_leading_zeroes: bool = True
+    trim_leading_zeroes: bool = False
     record_cashback: bool = True
     cashback_payee: str = "Cashback"
     cashback_ledger_asset_account: str = "Assets:Mono2ledger:Cashback"
