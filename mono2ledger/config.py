@@ -1,6 +1,5 @@
 import logging
 import re
-from datetime import date, datetime, time
 from pathlib import Path
 from typing import Optional
 
@@ -84,51 +83,6 @@ class MatcherValue(BaseModel):
 class MatcherPredicate(BaseModel):
     mcc: Optional[list[int]] = None
     description: Optional[str] = None
-    from_time: Optional[datetime] = None
-    to_time: Optional[datetime] = None
-
-    @field_validator("from_time", mode="before")
-    def validate_from_time(cls, value: str | datetime):
-        try:
-            return cls._validate_datetime(value, date.min, time.min)
-        except ValueError as e:
-            raise ValueError(f"from_time: {e}")
-
-    @field_validator("to_time", mode="after")
-    def validate_to_time(cls, value: str | datetime):
-        try:
-            return cls._validate_datetime(value, date.max, time.max)
-        except ValueError as e:
-            raise ValueError(f"to_time: {e}")
-
-    @staticmethod
-    def _validate_datetime(
-        datetime_str: str | datetime, min_date: datetime, min_time: datetime
-    ) -> datetime:
-        if isinstance(datetime_str, datetime):
-            return datetime_str
-        period_date, *period_time = datetime_str.split("T")
-        period_time = period_time[0] if period_time else None
-        if period_date:
-            year, month, day = re.search(
-                r"([\d*]+)?-?([\d*]+)?-?([\d*]+)?", period_date
-            ).groups()
-            period_date = date(
-                year=int(year) if year and year != "*" else min_date.year,
-                month=int(month) if month and month != "*" else min_date.month,
-                day=int(day) if day and day != "*" else min_date.day,
-            )
-        else:
-            period_date = min_date
-        if period_time:
-            hour, minute = re.search(r"([\d*]+)?:?([\d*]+)?", period_time).groups()
-            period_time = time(
-                int(hour) if hour and hour != "*" else min_time.hour,
-                int(minute) if minute and minute != "*" else min_time.minute,
-            )
-        else:
-            period_time = min_time
-        return datetime.combine(period_date, period_time)
 
 
 class Matcher(BaseModel):
@@ -180,17 +134,8 @@ class ConfigModel(BaseModel):
     ) -> MatcherValue:
         for matcher in matchers:
             predicate = matcher.predicate
-            if (
-                (predicate.mcc and statement.mcc in predicate.mcc)
-                or (
-                    predicate.from_time
-                    and statement.time >= predicate.from_time.timestamp()
-                )
-                or (
-                    predicate.to_time
-                    and statement.time <= predicate.to_time.timestamp()
-                )
-                or (
+            if (predicate.mcc and statement.mcc in predicate.mcc) or (
+                (
                     predicate.description
                     and re.match(predicate.description, statement.description)
                 )
