@@ -279,7 +279,7 @@ def format_ledger_transaction(
         )
 
 
-def setup_logging(level: str) -> None:
+def setup_logging(debug: bool = False) -> None:
     class Formatter(logging.Formatter):
         def format(self, record):
             if record.levelno == logging.INFO:
@@ -298,18 +298,25 @@ def setup_logging(level: str) -> None:
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(Formatter())
     logging.root.addHandler(handler)
-    logging.root.setLevel(level)
+    if debug:
+        logging.root.setLevel(logging.DEBUG)
+    else:
+        logging.root.setLevel(logging.INFO)
 
 
 def _main():
     parser = argparse.ArgumentParser(prog="mono2ledger")
-    parser.add_argument("input", type=argparse.FileType("r"))
     parser.add_argument(
-        "-l", "--log_level", type=str, required=False, default="WARNING"
+        "input",
+        type=argparse.FileType("r"),
+        help="ledger file to obtain date of last transaction from",
+    )
+    parser.add_argument(
+        "-D", "--debug", action="store_true", help="enable printing of debugging info"
     )
     args = parser.parse_args(sys.argv[1:])
 
-    setup_logging(args.log_level.upper())
+    setup_logging(args.debug)
 
     now = datetime.now()
     last_transaction_date = get_last_transaction_date(
