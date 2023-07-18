@@ -1,7 +1,8 @@
 import logging
 import re
+from collections import namedtuple
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from pydantic import (
     BaseModel,
@@ -36,8 +37,8 @@ class SettingsModel(BaseModel):
 
     @model_validator(mode="after")
     def check_ignored_accounts(cls, model: "SettingsModel"):
-        provided_fields = model.model_fields_set
-        if "ignored_accounts" not in provided_fields:
+        defined_fields = model.model_fields_set
+        if "ignored_accounts" not in defined_fields:
             logging.warning(
                 """
                 Ignored accounts are not set in config. It is recommended to set them
@@ -66,9 +67,25 @@ class MatcherValue(BaseModel):
     ledger_account: Optional[str] = None
 
 
+MatcherPredicateResult = namedtuple("MatcherPredicateResult", ["field", "result"])
+
+
 class MatcherPredicate(BaseModel):
-    mcc: Optional[list[int]] = None
+    mcc: list[int] = []
     description: Optional[str] = None
+
+    def matches(self, statement: "StatementItem") -> Iterator[MatcherPredicateResult]:
+        defined_fields = self.model_fields_set
+        if "mcc" in defined_fields:
+            yield MatcherPredicateResult(field="mcc", result=statement.mcc in self.mcc)
+        if "description" in defined_fields:
+            yield MatcherPredicateResult(
+                field="description",
+                result=(
+                    self.description
+                    and re.match(self.description, statement.description)
+                ),
+            )
 
 
 class Matcher(BaseModel):
@@ -119,13 +136,7 @@ class ConfigModel(BaseModel):
         _current_value: dict | MatcherValue,
     ) -> MatcherValue:
         for matcher in matchers:
-            predicate = matcher.predicate
-            if (predicate.mcc and statement.mcc in predicate.mcc) or (
-                (
-                    predicate.description
-                    and re.match(predicate.description, statement.description)
-                )
-            ):
+            if all(x.result for x in matcher.predicate.matches(statement)):
                 current_value = self._merge_values(_current_value, matcher.value)
                 if matcher.submatchers:
                     return self._match_statement(
