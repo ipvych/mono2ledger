@@ -231,7 +231,7 @@ def format_ledger_transaction(
     if source_statement:
         payee = get_config().settings.transfer_payee
         to_account = get_ledger_account_for_account(statement.account)
-        from_account = source_statement.account
+        from_account = get_ledger_account_for_account(source_statement.account)
         amount = statement.amount
         if source_statement.amount != source_statement.operation_amount:
             exchange_amount = source_statement.amount
@@ -241,7 +241,10 @@ def format_ledger_transaction(
     else:
         match: MatcherValue = get_config().match_statement(statement)
         payee = match.payee if match.payee else statement.description
-        from_account = statement.account
+        from_account = (
+            get_ledger_account_for_account(statement.account)
+            + match.source_ledger_account_suffix
+        )
         to_account = (
             match.ledger_account
             if match.ledger_account
@@ -254,7 +257,6 @@ def format_ledger_transaction(
                 numeric=str(statement.currency_code)
             ).alpha_3
 
-    from_account = get_ledger_account_for_account(from_account)
     currency = currencies.get(numeric=str(statement.currency_code)).alpha_3
     if amount < 0:
         to_account, from_account = from_account, to_account

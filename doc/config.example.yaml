@@ -52,6 +52,10 @@ accounts:
 # accounts.
 matchers:
   - value:
+      # If you keep separate accounts for different expence categories suffix
+      # can be added to ledger account name to differentiate between them with
+      # this option
+      source_ledger_account_suffix: ":Groceries"
       # When ignore is set to true statement will not be printed
       ignore: false
       # ledger account to use as destination of funds

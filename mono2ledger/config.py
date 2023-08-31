@@ -65,6 +65,7 @@ class MatcherValue(BaseModel):
     ignore: bool = False
     payee: Optional[str] = None  # Defaults to statementitem description
     ledger_account: Optional[str] = None
+    source_ledger_account_suffix: str = ""
 
 
 MatcherPredicateResult = namedtuple("MatcherPredicateResult", ["field", "result"])
@@ -130,7 +131,6 @@ class ConfigModel(BaseModel):
 
     def _match_statement(
         self,
-        # TODO: Fix ruff warning that annotation is invalid
         statement: "StatementItem",
         matchers: list[Matcher],
         _current_value: dict | MatcherValue,
