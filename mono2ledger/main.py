@@ -269,7 +269,7 @@ def format_ledger_transaction(
     )
 
     exchange = (
-        f" @@ {format_amount(-exchange_amount, pad=False)} {exchange_currency}"
+        f"@@ {format_amount(-exchange_amount, pad=False)} {exchange_currency}"
         if exchange_amount and exchange_currency
         else ""
     )
