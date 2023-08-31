@@ -30,6 +30,9 @@ Currency = list(currencies)[0].__class__
 def get_config() -> ConfigModel:
     config_dir = os.getenv("XDG_CONFIG_HOME", "~/.config")
     config_file = Path(config_dir, "mono2ledger/config.yaml").expanduser()
+    if not config_file.exists():
+        logging.fatal("Config file for mono2ledger does not exist")
+        exit(1)
     with config_file.open("rb") as file:
         return ConfigModel.model_validate(yaml.load(file, Loader=yaml.Loader))
 
@@ -112,7 +115,15 @@ def get_last_transaction_date(file: TextIO, default=None) -> datetime:
             result = match[0]
 
     if result:
-        return datetime.strptime(result, get_config().settings.ledger_date_format)
+        date_format = get_config().settings.ledger_date_format
+        try:
+            return datetime.strptime(result, date_format)
+        except ValueError:
+            logging.fatal(
+                "Could not match date in ledger file using format set in config. "
+                "Date is {result}, format is {date_format}"
+            )
+            exit(1)
     return default
 
 
