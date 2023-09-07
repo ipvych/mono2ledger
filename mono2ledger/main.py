@@ -21,9 +21,9 @@ import yaml
 from dateutil.relativedelta import relativedelta
 from pycountry import currencies
 
-from .config import ConfigModel, MatcherValue
+from mono2ledger.config import ConfigModel, MatcherValue
 
-Currency = list(currencies)[0].__class__
+Currency = currencies.get(alpha_3="UAH").__class__
 
 
 @cache
@@ -31,7 +31,7 @@ def get_config() -> ConfigModel:
     config_dir = os.getenv("XDG_CONFIG_HOME", "~/.config")
     config_file = Path(config_dir, "mono2ledger/config.yaml").expanduser()
     if not config_file.exists():
-        logging.fatal("Config file for mono2ledger does not exist")
+        logging.error("Config file for mono2ledger does not exist")
         exit(1)
     with config_file.open("rb") as file:
         return ConfigModel.model_validate(yaml.load(file, Loader=yaml.Loader))
@@ -46,7 +46,7 @@ def get_api_key() -> str:
         )
         stdout, stderr = proc.communicate()
         if proc.returncode != 0:
-            logging.fatal("Could not retrieve API key using provided command.")
+            logging.error("Could not retrieve API key using provided command.")
             exit(1)
         return stdout.decode().split("\n")[0]
 
@@ -93,7 +93,7 @@ class StatementItem(JSONObject):
         super().__init__(json_data, **kwargs)
 
 
-def get_last_transaction_date(file: TextIO, default=None) -> datetime:
+def get_last_transaction_date(file_path: str, default=None) -> datetime:
     """
     Return date of the last ledger transaction in file.
     """
@@ -101,25 +101,26 @@ def get_last_transaction_date(file: TextIO, default=None) -> datetime:
     comment_pattern = re.compile(r"^\s*[;#*]+")
     inside_comment = False
     result = None
-    for line in file.readlines():
-        # Exclude hledger multi-line comments
-        if not inside_comment and line == "comment\n":
-            inside_comment = True
-        elif inside_comment and line == "end comment\n":
-            inside_comment = False
-        if (
-            not inside_comment
-            and not comment_pattern.match(line)
-            and (match := pattern.findall(line))
-        ):
-            result = match[0]
+    with open(file_path, "r") as file:
+        for line in file.readlines():
+            # Exclude hledger multi-line comments
+            if not inside_comment and line == "comment\n":
+                inside_comment = True
+            elif inside_comment and line == "end comment\n":
+                inside_comment = False
+            if (
+                not inside_comment
+                and not comment_pattern.match(line)
+                and (match := pattern.findall(line))
+            ):
+                result = match[0]
 
     if result:
         date_format = get_config().settings.ledger_date_format
         try:
             return datetime.strptime(result, date_format)
         except ValueError:
-            logging.fatal(
+            logging.error(
                 "Could not match date in ledger file using format set in config. "
                 "Date is {result}, format is {date_format}"
             )
@@ -177,7 +178,7 @@ def fetch_statements(
                 time.sleep(60)
                 yield from fetch_statements(accounts, from_time, to_time)
             else:
-                logging.fatal(
+                logging.error(
                     "Got unexpected response when fetching statement for account "
                     f"{account}. Response has status code {e.code} with content "
                     f"{e.read().decode()}"
@@ -305,25 +306,37 @@ def setup_logging(debug: bool = False) -> None:
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(Formatter())
     logging.root.addHandler(handler)
-    if debug:
-        logging.root.setLevel(logging.DEBUG)
-    else:
-        logging.root.setLevel(logging.INFO)
 
 
-def _main():
+def parse_args():
+    config = get_config()
     parser = argparse.ArgumentParser(prog="mono2ledger")
     parser.add_argument(
         "input",
-        type=argparse.FileType("r"),
         help="ledger file to obtain date of last transaction from",
+        default=config.settings.ledger_file,
+        nargs="?",
     )
     parser.add_argument(
         "-D", "--debug", action="store_true", help="enable printing of debugging info"
     )
     args = parser.parse_args(sys.argv[1:])
+    if not args.input:
+        logging.error(
+            "You need to set location of ledger file in config"
+            " or provide it in command line."
+        )
+        exit(1)
+    return args
 
-    setup_logging(args.debug)
+
+def _main():
+    setup_logging()
+    args = parse_args()
+    if args.debug:
+        logging.root.setLevel(logging.DEBUG)
+    else:
+        logging.root.setLevel(logging.INFO)
 
     now = datetime.now()
     last_transaction_date = get_last_transaction_date(
