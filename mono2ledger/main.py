@@ -68,7 +68,10 @@ class JSONObject:
         if "_" in item:
             items = item.split("_")
             items = [items[0]] + [x.capitalize() for x in items[1:]]
-            return self.json["".join(items)]
+            try:
+                return self.json["".join(items)]
+            except KeyError:
+                raise AttributeError
         return self.json[item]
 
     def get(self, item, default=None):
@@ -247,12 +250,11 @@ def format_ledger_transaction(
         )
         amount = -statement.amount
         if statement.amount != statement.operation_amount:
-            exchange_amount = statement.amount
+            exchange_amount = statement.operation_amount
             exchange_currency = currencies.get(
                 numeric=str(statement.currency_code)
             ).alpha_3
 
-    currency = currencies.get(numeric=str(statement.currency_code)).alpha_3
     if amount < 0:
         to_account, from_account = from_account, to_account
         amount = -amount
@@ -268,6 +270,12 @@ def format_ledger_transaction(
         if exchange_amount and exchange_currency
         else ""
     )
+
+    currency = currencies.get(
+        numeric=str(
+            statement.account.currency_code if exchange else statement.currency_code
+        )
+    ).alpha_3
 
     yield (
         f"{transaction_date} {payee}\n"

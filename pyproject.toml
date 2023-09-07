@@ -20,7 +20,7 @@ dependencies = [
 version = "2.1"
 
 [project.optional-dependencies]
-test = ["pytest"]
+test = ["pytest", "pytest-factoryboy", "faker"]
 
 [project.scripts]
 mono2ledger = "mono2ledger:main"
