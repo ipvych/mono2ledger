@@ -189,7 +189,7 @@ def fetch_statements(
         )
         logging.info(
             f"Fetched statements for account {account.id}"
-            f" from {_from_time.isoformat()} to {_to_time.isoformat()}."
+            f" from {_from_time.date().isoformat()} to {_to_time.date().isoformat()}."
             " Waiting 60 seconds before fetching another statement"
             " to obey API rate limit."
         )
