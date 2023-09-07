@@ -19,5 +19,8 @@ dependencies = [
 ]
 version = "2.1"
 
+[project.optional-dependencies]
+test = ["pytest"]
+
 [project.scripts]
 mono2ledger = "mono2ledger:main"
