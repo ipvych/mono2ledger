@@ -205,13 +205,7 @@ def fetch_statements(
 
 
 def get_ledger_account_for_account(account: Account) -> str:
-    match = get_config().match_account(account.id)
-    if not match:
-        logging.warning(
-            "Could not find matching account definition for account with id", account.id
-        )
-        return f"Assets:Mono2ledger:{account.id}"
-    return match
+    return get_config().match_account(account.id, f"Assets:Mono2ledger:{account.id}")
 
 
 def format_ledger_transaction(

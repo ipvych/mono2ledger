@@ -115,7 +115,9 @@ class ConfigModel(BaseModel):
         try:
             return self.accounts[account_id].ledger_account
         except KeyError:
-            logging.warning(f"Could not find matching account with id {account_id}")
+            logging.warning(
+                f"Could not find account definition for account with id {account_id}"
+            )
             return default
 
     def _merge_values(
