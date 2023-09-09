@@ -1,4 +1,0 @@
-pydantic
-pyyaml
-pycountry
-python-dateutil
