@@ -77,7 +77,7 @@ class JSONObject:
     def get(self, item, default=None):
         try:
             return self.__getattr__(item)
-        except KeyError:
+        except (KeyError, AttributeError):
             return default
 
     def __repr__(self):
