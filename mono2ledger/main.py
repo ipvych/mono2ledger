@@ -18,7 +18,6 @@ from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
 import yaml
-from dateutil.relativedelta import relativedelta
 from pycountry import currencies
 
 from mono2ledger.config import ConfigModel, MatcherValue
@@ -149,18 +148,18 @@ def fetch_accounts() -> list[Account]:
 
 
 def date_range(
-    start: datetime, end: datetime, interval: timedelta | relativedelta
+    start: datetime, end: datetime, interval: timedelta
 ) -> Iterator[tuple[datetime, datetime]]:
-    delta = end - start
-    if delta.days > 30:
-        yield from date_range(start, end - interval, interval)
-    yield end - delta, end
+    while start + interval < end:
+        yield start, start + interval
+        start = start + interval
+    yield start, end
 
 
 def fetch_statements(
     accounts: list[Account], from_time: datetime, to_time: datetime
 ) -> list[StatementItem]:
-    intervals = date_range(from_time, to_time, relativedelta(months=1))
+    intervals = date_range(from_time, to_time, timedelta(days=31))
     combinations = list(itertools.product(accounts, intervals))
     for account, interval in combinations:
         _from_time, _to_time = interval
