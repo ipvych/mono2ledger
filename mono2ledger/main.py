@@ -12,9 +12,26 @@ from urllib.error import HTTPError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
-from pycountry import currencies
-
 from mono2ledger.config import Matcher, get_config
+
+try:
+    from pycountry import currencies
+except ImportError:
+    logging.warning(
+        "pycountry optional dependency is not installed."
+        " Some currencies may not be resolved correctly."
+    )
+
+    class currencies:
+        @staticmethod
+        def get(*, numeric: str):
+            alpha = {
+                "980": "UAH",
+                "978": "EUR",
+                "840": "USD",
+            }.get(numeric, numeric)
+            return type("currency", (), {"alpha_3": alpha})
+
 
 # Globals set inside main function
 config = None
