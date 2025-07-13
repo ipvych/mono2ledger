@@ -1,168 +1,102 @@
+import contextlib
 import logging
+import os
 import re
-from collections import namedtuple
+import subprocess
+import tomllib
+from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Any, Iterator
 
-from pydantic import (
-    BaseModel,
-    Field,
-    FilePath,
-    RootModel,
-    field_validator,
-    model_validator,
-)
-
-# TODO: Can doc be generated from pydantic models?
+_Unset = object
 
 
-class SettingsModel(BaseModel):
+@dataclass(slots=True)
+class Matcher:
+    ledger_account: str | None = None
+    payee: str | None = None
+    source_ledger_account_suffix: str = ""
+    mcc_match: int | list[int] | None = field(default_factory=list)
+    description_regex: str | list[str] | None = field(default_factory=list)
+    ignore: bool = False
+
+
+@dataclass()
+class Config:
     ledger_date_format: str = "%Y/%m/%d"
-    ignored_accounts: list[str] = []
-    ledger_file: Optional[FilePath] = None
+    ignored_accounts: list[str] | _Unset = _Unset
+    ledger_file: str | None = None
     transfer_payee: str = "Transfer"
-    api_key_command: Optional[str] = None
+    api_key_command: str | None = None
     trim_leading_zeroes: bool = False
     record_cashback: bool = True
     cashback_payee: str = "Cashback"
     cashback_ledger_asset_account: str = "Assets:Mono2ledger:Cashback"
     cashback_ledger_income_account: str = "Income:Mono2ledger:Cashback"
+    accounts: dict[str, str] = field(default_factory=dict)
+    matchers: list[Matcher] = field(default_factory=list)
 
-    @field_validator("ledger_file", mode="before")
-    def expand_ledger_file_path(cls, value: str):
-        try:
-            return Path(value).expanduser()
-        except RuntimeError:
-            return value
-
-    @model_validator(mode="after")
-    def check_ignored_accounts(cls, model: "SettingsModel"):
-        defined_fields = model.model_fields_set
-        if "ignored_accounts" not in defined_fields:
-            logging.warning(
-                """
-                Ignored accounts are not set in config. It is recommended to set them
-                so statements for unused accounts are not fetched and import is faster.
-                If this is intended then this warning can be suppressed by setting value
-                of 'ignored_accounts' to empty list in config.
-            """
-            )
-        return model
+    @cached_property
+    def api_key(self):
+        if command := os.getenv("MONO2LEDGER_API_KEY_COMMAND", self.api_key_command):
+            proc = subprocess.run(command, text=True, capture_output=True)
+            if proc.returncode != 0:
+                logging.error("Could not retrieve API key using provided command.")
+                exit(1)
+            return proc.stdout.split("\n")[0]
 
 
-class Account(BaseModel):
-    ledger_account: str
+def get_config() -> Config:
+    config_dir = os.getenv("XDG_CONFIG_HOME", "~/.config")
+    config_file = Path(config_dir, "mono2ledger/config.toml").expanduser()
+    if not config_file.exists():
+        logging.error("Config file for mono2ledger does not exist")
+        exit(1)
+    with config_file.open("rb") as c:
+        parsed = tomllib.load(c)
 
-
-class AccountsModel(RootModel):
-    root: dict[str, Account] = {}
-
-    def __getitem__(self, item):
-        return self.root[item]
-
-
-class MatcherValue(BaseModel):
-    ignore: bool = False
-    payee: Optional[str] = None  # Defaults to statementitem description
-    ledger_account: Optional[str] = None
-    source_ledger_account_suffix: str = ""
-
-
-MatcherPredicateResult = namedtuple("MatcherPredicateResult", ["field", "result"])
-
-
-class MatcherPredicate(BaseModel):
-    mcc: list[int] = []
-    description: Optional[str] = None
-
-    def matches(self, statement: "StatementItem") -> Iterator[MatcherPredicateResult]:
-        defined_fields = self.model_fields_set
-        if "mcc" in defined_fields:
-            yield MatcherPredicateResult(field="mcc", result=statement.mcc in self.mcc)
-        if "description" in defined_fields:
-            yield MatcherPredicateResult(
-                field="description",
-                result=(
-                    self.description
-                    and re.match(self.description, statement.description)
-                ),
-            )
-
-
-class Matcher(BaseModel):
-    value: MatcherValue = MatcherValue()
-    predicate: MatcherPredicate
-    submatchers: "MatchersModel" = []
-
-
-class MatchersModel(RootModel):
-    root: list[Matcher] = []
-
-    def __iter__(self):
-        return iter(self.root)
-
-    def __getitem__(self, item):
-        return self.root[item]
-
-
-class ConfigModel(BaseModel):
-    settings: SettingsModel = Field(default_factory=lambda: SettingsModel())
-    accounts: AccountsModel = Field(default_factory=lambda: AccountsModel())
-    matchers: MatchersModel = Field(default_factory=lambda: MatchersModel())
-
-    def match_account(self, account_id: str, default=None) -> Account:
-        """Return matching ledger account name for provided account id or default"""
-        try:
-            return self.accounts[account_id].ledger_account
-        except KeyError:
-            logging.warning(
-                f"Could not find account definition for account with id {account_id}"
-            )
-            return default
-
-    def _merge_values(
-        self, first: dict | MatcherValue, second: dict | MatcherValue
-    ) -> MatcherValue:
-        # See https://stackoverflow.com/questions/60988674
-        # for why check for not dict instead of MatcherValue
-        if not isinstance(first, dict):
-            first = first.model_dump(exclude_unset=True)
-        if not isinstance(second, dict):
-            second = second.model_dump(exclude_unset=True)
-        return MatcherValue.model_validate(first | second)
-
-    def _match_statement(
-        self,
-        statement: "StatementItem",
-        matchers: list[Matcher],
-        _current_value: dict | MatcherValue,
-    ) -> MatcherValue:
-        for matcher in matchers:
-            if all(x.result for x in matcher.predicate.matches(statement)):
-                current_value = self._merge_values(_current_value, matcher.value)
-                if matcher.submatchers:
-                    return self._match_statement(
-                        statement, matcher.submatchers, current_value
-                    )
-                else:
-                    logging.debug(
-                        f"Matched statement {statement} with value {current_value}"
-                    )
-                    return current_value
-        logging.debug(
-            f"Matched statement {statement} with value {_current_value}",
+    config = Config(**parsed.get("config", {}))
+    config.accounts = parsed.get("accounts", {})
+    config.matchers = list(
+        parse_matchers(parsed.get("categories", {}), parsed.get("match", []))
+    )
+    # Expand ledger file to full location if it is set
+    if config.ledger_file:
+        with contextlib.suppress(RuntimeError):
+            config.ledger_file = Path(config.ledger_file).expanduser()
+    if config.ignored_accounts == _Unset:
+        logging.warning(
+            "'ignored_accounts' is not set in config."
+            " It is recommended to set this value so statements for unused accounts"
+            " are not fetched making import is faster. If this is intended then this"
+            " warning can be suppressed by setting value of 'ignored_accounts' to empty"
+            " list in config."
         )
-        return _current_value
+        config.ignored_accounts = []
+    return config
 
-    def match_statement(
-        self, statement, default_value: Optional[dict | MatcherValue] = None
-    ) -> MatcherValue:
-        """
-        Return MatcherValue from config that matches statement.
 
-        Default matcher value will be provided values from which will be returned when
-        no matcher is found with values to override provided ones.
-        """
-        return self._match_statement(
-            statement, self.matchers, default_value if default_value else MatcherValue()
-        )
+def parse_matchers(
+    categories: dict[str, dict], matchers: list[dict]
+) -> Iterator[Matcher]:
+    for m in matchers:
+        if "category" in m:
+            c = m["category"]
+            del m["category"]
+            v = Matcher(**categories[c] | m)
+        else:
+            v = Matcher(**m)
+        v.mcc_match = ensure_list(v.mcc_match)
+        v.description_regex = ensure_list(v.description_regex)
+        for i, regex in enumerate(v.description_regex):
+            try:
+                v.description_regex[i] = re.compile(regex)
+            except re.PatternError:
+                logging.error(f"Invalid regex in matcher {m}")
+                exit(1)
+        yield v
+
+
+def ensure_list(v: Any | list[Any]) -> list[Any]:
+    return v if isinstance(v, list) else [v]

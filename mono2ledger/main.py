@@ -3,51 +3,21 @@ import io
 import itertools
 import json
 import logging
-import os
 import re
-import shlex
-import subprocess
 import sys
 import time
 from datetime import datetime, timedelta
-from functools import cache
-from pathlib import Path
 from typing import Iterator, Optional, TextIO
 from urllib.error import HTTPError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
 
-import yaml
 from pycountry import currencies
 
-from mono2ledger.config import ConfigModel, MatcherValue
+from mono2ledger.config import Matcher, get_config
 
-Currency = currencies.get(alpha_3="UAH").__class__
-
-
-@cache
-def get_config() -> ConfigModel:
-    config_dir = os.getenv("XDG_CONFIG_HOME", "~/.config")
-    config_file = Path(config_dir, "mono2ledger/config.yaml").expanduser()
-    if not config_file.exists():
-        logging.error("Config file for mono2ledger does not exist")
-        exit(1)
-    with config_file.open("rb") as file:
-        return ConfigModel.model_validate(yaml.load(file, Loader=yaml.Loader))
-
-
-@cache
-def get_api_key() -> str:
-    config_command = get_config().settings.api_key_command
-    if command := (os.getenv("MONO2LEDGER_API_KEY_COMMAND") or config_command):
-        proc = subprocess.Popen(
-            shlex.split(command), stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        stdout, stderr = proc.communicate()
-        if proc.returncode != 0:
-            logging.error("Could not retrieve API key using provided command.")
-            exit(1)
-        return stdout.decode().split("\n")[0]
+# Globals set inside main function
+config = None
 
 
 class JSONObject:
@@ -118,7 +88,7 @@ def get_last_transaction_date(file_path: str, default=None) -> datetime:
                 result = match[0]
 
     if result:
-        date_format = get_config().settings.ledger_date_format
+        date_format = config.ledger_date_format
         try:
             return datetime.strptime(result, date_format)
         except ValueError:
@@ -132,7 +102,7 @@ def get_last_transaction_date(file_path: str, default=None) -> datetime:
 
 def fetch(endpoint: str) -> dict:
     url = urljoin("https://api.monobank.ua", endpoint)
-    request = Request(url, headers={"X-Token": get_api_key()})
+    request = Request(url, headers={"X-Token": config.api_key})
     response = urlopen(request)
     return json.load(response.fp)
 
@@ -143,7 +113,7 @@ def fetch_accounts() -> list[Account]:
     return [
         Account(account)
         for account in response["accounts"]
-        if account["id"] not in get_config().settings.ignored_accounts
+        if account["id"] not in config.ignored_accounts
     ]
 
 
@@ -208,7 +178,26 @@ def fetch_statements(
 
 
 def get_ledger_account_for_account(account: Account) -> str:
-    return get_config().match_account(account.id, f"Assets:Mono2ledger:{account.id}")
+    return config.accounts.get(account.id, f"Assets:Mono2ledger:{account.id}")
+
+
+def match_statement(statement: StatementItem) -> Matcher:
+    rv = Matcher()
+    for matcher in config.matchers:
+        if (
+            any(x.match(statement.description) for x in matcher.description_regex)
+            or statement.mcc in matcher.mcc_match
+        ):
+            rv = matcher
+            break
+
+    if not rv.ledger_account:
+        rv.ledger_account = (
+            f"Expenses:Mono2ledger:{statement.account.id}:{statement.id}"
+        )
+    if not rv.payee:
+        rv.payee = statement.description
+    return rv
 
 
 def format_ledger_transaction(
@@ -218,15 +207,14 @@ def format_ledger_transaction(
 
     def format_amount(amount: float, pad: bool = True) -> str:
         amount = amount / 100
-        if config.settings.trim_leading_zeroes and amount % 1 == 0:
+        if config.trim_leading_zeroes and amount % 1 == 0:
             return f"{int(amount):8}" if pad else str(int(amount))
         return f"{amount:8.2f}" if pad else f"{amount:.2f}"
 
-    config = get_config()
     exchange_amount = None
     exchange_currency = None
     if source_statement:
-        payee = get_config().settings.transfer_payee
+        payee = config.transfer_payee
         to_account = get_ledger_account_for_account(statement.account)
         from_account = get_ledger_account_for_account(source_statement.account)
         amount = statement.amount
@@ -236,17 +224,13 @@ def format_ledger_transaction(
                 numeric=str(source_statement.account.currency_code)
             ).alpha_3
     else:
-        match: MatcherValue = get_config().match_statement(statement)
-        payee = match.payee if match.payee else statement.description
+        match = match_statement(statement)
+        payee = match.payee
         from_account = (
             get_ledger_account_for_account(statement.account)
             + match.source_ledger_account_suffix
         )
-        to_account = (
-            match.ledger_account
-            if match.ledger_account
-            else f"Expenses:Mono2ledger:{statement.account.id}:{statement.id}"
-        )
+        to_account = match.ledger_account
         amount = -statement.amount
         if statement.amount != statement.operation_amount:
             exchange_amount = statement.operation_amount
@@ -261,7 +245,7 @@ def format_ledger_transaction(
             exchange_amount = -exchange_amount
 
     transaction_date = datetime.fromtimestamp(statement.time).strftime(
-        config.settings.ledger_date_format
+        config.ledger_date_format
     )
 
     exchange = (
@@ -282,15 +266,13 @@ def format_ledger_transaction(
         f"\t{from_account}"
     )
 
-    if config.settings.record_cashback and (
-        cashback_amount := statement.cashback_amount
-    ):
+    if config.record_cashback and (cashback_amount := statement.cashback_amount):
         cashback_type = statement.account.cashback_type
         yield (
-            f"{transaction_date} {config.settings.cashback_payee}\n"
-            f"\t{config.settings.cashback_ledger_asset_account:60}"
+            f"{transaction_date} {config.cashback_payee}\n"
+            f"\t{config.cashback_ledger_asset_account:60}"
             f" {format_amount(cashback_amount)} {cashback_type}\n"
-            f"\t{config.settings.cashback_ledger_income_account}"
+            f"\t{config.cashback_ledger_income_account}"
         )
 
 
@@ -316,12 +298,11 @@ def setup_logging(debug: bool = False) -> None:
 
 
 def parse_args():
-    config = get_config()
     parser = argparse.ArgumentParser(prog="mono2ledger")
     parser.add_argument(
         "input",
         help="ledger file to obtain date of last transaction from",
-        default=config.settings.ledger_file,
+        default=config.ledger_file,
         nargs="?",
     )
     parser.add_argument(
@@ -339,11 +320,10 @@ def parse_args():
 
 def _main():
     setup_logging()
+    global config
+    config = get_config()
     args = parse_args()
-    if args.debug:
-        logging.root.setLevel(logging.DEBUG)
-    else:
-        logging.root.setLevel(logging.INFO)
+    logging.root.setLevel(logging.DEBUG if args.debug else logging.INFO)
 
     now = datetime.now()
     last_transaction_date = get_last_transaction_date(

@@ -9,13 +9,9 @@ authors = [
 ]
 description = "Utility to convert monobank card statement to ledger entries"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = {file = "COPYING"}
-dependencies = [
-  "pydantic",
-  "pyyaml",
-  "pycountry",
-]
+dependencies = ["pycountry"]
 version = "2.1"
 
 [project.optional-dependencies]
