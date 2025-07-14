@@ -13,34 +13,44 @@ def assert_transaction_by_id(stdout, statement, account, amount_str):
     assert regex.search(stdout)
 
 
-def test_ledger_account_required_without_config(config, main, caplog):
-    with config({}), caplog.at_level("ERROR"), pytest.raises(SystemExit):
-        main([""])
+def test_ledger_file_must_be_set(caplog, main):
+    with pytest.raises(SystemExit) as excinfo:
+        main(ledger_file=None)
+    assert excinfo.value.code == 1
     assert (
         "You need to set location of ledger file in config"
         " or provide it in command line."
     ) in caplog.text
 
 
-def test_statement_with_exchange(
-    capsys, config, main, fetcher, ledger_file, account_factory, statement_factory
-):
-    now = datetime.now()
-    last_transaction_date = now.date() - timedelta(days=1)
-    account = account_factory(currencyCode=980)
+# def test_statement_with_commission(
+#     capsys, main, account_factory, statement_factory
+# ):
+#     account = account_factory(currencyCode=980)
+#     statement = statement_factory(account=account, commission=100)
+#     with (
+#         config({"settings": {"ledger_file": ledger_file(last_transaction_date)}}),
+#         fetcher(accounts=[account], statements=[statement]),
+#     ):
+#         main()
+#     assert_transaction_by_id(
+#         capsys.readouterr().out, statement, account, "10.00 UAH @@ 1.00 USD"
+#     )
+
+
+def test_statement_with_exchange(capsys, main, account_factory, statement_factory):
+    account = account_factory(currencyCode=980)  # UAH
     statement = statement_factory(
         account=account,
         currencyCode=840,  # USD
-        time=now.timestamp(),
         amount=1000,
         operationAmount=100,
     )
-    with (
-        config({"settings": {"ledger_file": ledger_file(last_transaction_date)}}),
-        fetcher(accounts=[account], statements=[statement]),
-    ):
-        main()
+    main(ledger_file="", accounts=[account], statements=[statement])
 
     assert_transaction_by_id(
-        capsys.readouterr().out, statement, account, "10.00 UAH @@ 1.00 USD"
+        capsys.readouterr().out,
+        statement,
+        account,
+        f"{statement.amount / 100:.2f} UAH @@ {statement.operationAmount / 100:.2f} USD",
     )

@@ -1,87 +1,52 @@
 import random
 import tempfile
-from contextlib import contextmanager
-from pathlib import Path
 from unittest import mock
 
 import factory
 import pytest
-import yaml
 from faker import Faker
+from mono2ledger.config import Config
 from mono2ledger.main import Account, StatementItem
+from mono2ledger.main import main as real_main
 from pytest_factoryboy import register as register_factory
 
 fake = Faker()
 
 
 @pytest.fixture
-def config():
-    @contextmanager
-    def wrapper(config=None):
-        from mono2ledger.main import get_config
-
-        get_config.cache_clear()
-        with tempfile.TemporaryDirectory(prefix="mono2ledger-") as config_dir:
-            with mock.patch(
-                "mono2ledger.main.os.getenv", return_value=config_dir
-            ) as patch:
-                config_file = Path(config_dir, "mono2ledger/config.yaml")
-                config_file.parent.mkdir(parents=True)
-                with config_file.open("w") as file:
-                    file.write(yaml.dump(config))
-                yield patch
-        get_config.cache_clear()
-
-    return wrapper
-
-
-@pytest.fixture
-def ledger_file():
-    ledger_file = tempfile.NamedTemporaryFile("w", prefix="mono2ledger-")
-
-    def wrapper(last_transaction_date="", extra=""):
-        transaction_date = last_transaction_date or fake.date()
-        transaction = extra + (
-            f"\n{transaction_date} Payee\n"
-            "\tExpenses:Foo  100 UAH\n"
-            "\tAssets:Bar\n\n"
-        )
-        ledger_file.write(transaction)
-        return ledger_file.name
-
-    try:
-        yield wrapper
-    finally:
-        pass
-        # ledger_file.close()
-
-
-@pytest.fixture
-def fetcher():
-    @contextmanager
-    def wrapper(accounts: list[Account] = [], statements: list[StatementItem] = []):
-        # NOTE 2023-09-07: This ignores ignored_accounts settings
-        with mock.patch(
-            "mono2ledger.main.fetch_accounts", return_value=accounts
-        ), mock.patch("mono2ledger.main.fetch_statements", return_value=statements):
-            yield
-
-    return wrapper
-
-
-@pytest.fixture
 def main():
-    def wrapper(args=[]):
-        import sys
+    def wrapper(
+        *argv,
+        config=None,
+        accounts=None,
+        statements=None,
+        ledger_file=None,
+    ):
+        config_obj = Config(**config if config else {})
+        if statements is None:
+            statements = []
+        if accounts is None:
+            accounts = []
 
-        from mono2ledger.main import main as real_main
+        def raise_valueerror():
+            raise ValueError
 
-        old_argv = sys.argv
-        try:
-            sys.argv = ["executable"] + args
-            real_main()
-        finally:
-            sys.argv = old_argv
+        with (
+            mock.patch("mono2ledger.main.get_config", return_value=config_obj),
+            mock.patch("mono2ledger.main.fetch_accounts", return_value=accounts),
+            mock.patch("mono2ledger.main.fetch_statements", return_value=statements),
+            # Make sure fetch mocks above are overwriting real fetch call
+            mock.patch("mono2ledger.main.fetch", side_effect=raise_valueerror),
+            mock.patch("sys.argv", ("mono2ledger",) + argv),
+        ):
+
+            if ledger_file is not None:
+                with tempfile.NamedTemporaryFile("w") as f:
+                    f.write(ledger_file)
+                    config_obj.ledger_file = f.name
+                    real_main()
+            else:
+                real_main()
 
     return wrapper
 

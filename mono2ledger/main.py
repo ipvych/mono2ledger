@@ -314,7 +314,7 @@ def setup_logging(debug: bool = False) -> None:
     logging.root.addHandler(handler)
 
 
-def parse_args():
+def parse_args(argv):
     parser = argparse.ArgumentParser(prog="mono2ledger")
     parser.add_argument(
         "input",
@@ -325,7 +325,7 @@ def parse_args():
     parser.add_argument(
         "-D", "--debug", action="store_true", help="enable printing of debugging info"
     )
-    args = parser.parse_args(sys.argv[1:])
+    args = parser.parse_args(argv[1:])
     if not args.input:
         logging.error(
             "You need to set location of ledger file in config"
@@ -335,11 +335,11 @@ def parse_args():
     return args
 
 
-def _main():
+def run(argv):
     setup_logging()
     global config
     config = get_config()
-    args = parse_args()
+    args = parse_args(argv)
     logging.root.setLevel(logging.DEBUG if args.debug else logging.INFO)
 
     now = datetime.now()
@@ -419,8 +419,12 @@ def _main():
 
 def main():
     try:
-        _main()
+        run(sys.argv)
     except KeyboardInterrupt as e:
         exit("Received interrupt, exiting")
         if logging.getLogger().level <= logging.DEBUG:
             raise e
+
+
+if __name__ == "__main__":
+    main()
