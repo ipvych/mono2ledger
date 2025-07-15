@@ -1,5 +1,4 @@
 import argparse
-import io
 import itertools
 import json
 import logging
@@ -7,7 +6,7 @@ import re
 import sys
 import time
 from datetime import datetime, timedelta
-from typing import Iterator, Optional, TextIO
+from typing import Iterator, Optional
 from urllib.error import HTTPError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
@@ -85,8 +84,8 @@ def get_last_transaction_date(file_path: str, default=None) -> datetime:
 def fetch(endpoint: str) -> dict:
     url = urljoin("https://api.monobank.ua", endpoint)
     request = Request(url, headers={"X-Token": config.api_key})
-    response = urlopen(request)
-    return json.load(response.fp)
+    with urlopen(request) as response:
+        return json.load(response.fp)
 
 
 def fetch_accounts() -> list[Account]:
