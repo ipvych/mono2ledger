@@ -37,49 +37,14 @@ except ImportError:
 config = None
 
 
-class JSONObject:
-    json: dict
-
-    def __init__(self, json_data: str | dict | TextIO, **kwargs):
-        if isinstance(json_data, dict):
-            self.json = json_data
-        elif isinstance(json_data, io.IOBase):
-            self.json = json.load(json_data)
-        else:
-            self.json = json.loads(json_data)
-
-        self.json |= kwargs
-
-    def __getattr__(self, item: str):
-        if "_" in item:
-            items = item.split("_")
-            items = [items[0]] + [x.capitalize() for x in items[1:]]
-            try:
-                return self.json["".join(items)]
-            except KeyError:
-                raise AttributeError
-        return self.json[item]
-
-    def get(self, item, default=None):
-        try:
-            return self.__getattr__(item)
-        except (KeyError, AttributeError):
-            return default
-
-    def __repr__(self):
-        return str(self.json)
-
-
-class Account(JSONObject):
+# Subclasses for dict for typing purposes
+class Account(dict):
     pass
 
 
-class StatementItem(JSONObject):
-    account = None
-
-    def __init__(self, json_data, account=None, **kwargs):
-        self.account = account
-        super().__init__(json_data, **kwargs)
+class StatementItem(dict):
+    # Set manually to refer to account which this statement is part of
+    account: Account
 
 
 def get_last_transaction_date(file_path: str, default=None) -> datetime:
@@ -128,7 +93,7 @@ def fetch_accounts() -> list[Account]:
     response = fetch("/personal/client-info")
     logging.debug(f"Fetched accounts with response {response}")
     return [
-        Account(account)
+        Account(**account)
         for account in response["accounts"]
         if account["id"] not in config.ignored_accounts
     ]
@@ -153,7 +118,7 @@ def fetch_statements(
         try:
             response = fetch(
                 "/personal/statement"
-                f"/{account.id}"
+                f"/{account["id"]}"
                 f"/{int(_from_time.timestamp())}"
                 f"/{int(_to_time.timestamp())}"
             )
@@ -177,14 +142,14 @@ def fetch_statements(
             f"Fetched statement for account {account} with response {response}"
         )
         logging.info(
-            f"Fetched statements for account {account.id}"
+            f"Fetched statements for account {account["id"]}"
             f" from {_from_time.date().isoformat()} to {_to_time.date().isoformat()}."
             " Waiting 60 seconds before fetching another statement"
             " to obey API rate limit."
         )
         time.sleep(60)
         if len(response) < 500:
-            yield from (StatementItem(x, account=account) for x in response)
+            yield from (StatementItem(**x | {"account": account}) for x in response)
         else:
             # NOTE 2023-07-16: This was never tested but in theory should work as
             # intended
@@ -195,25 +160,25 @@ def fetch_statements(
 
 
 def get_ledger_account_for_account(account: Account) -> str:
-    return config.accounts.get(account.id, f"Assets:Mono2ledger:{account.id}")
+    return config.accounts.get(account["id"], f"Assets:Mono2ledger:{account["id"]}")
 
 
 def match_statement(statement: StatementItem) -> Matcher:
     rv = Matcher()
     for matcher in config.matchers:
         if (
-            any(x.match(statement.description) for x in matcher.description_regex)
-            or statement.mcc in matcher.mcc_match
+            any(x.match(statement["description"]) for x in matcher.description_regex)
+            or statement["mcc"] in matcher.mcc_match
         ):
             rv = matcher
             break
 
-    if not rv.ledger_account:
+    if rv.ledger_account is None:
         rv.ledger_account = (
-            f"Expenses:Mono2ledger:{statement.account.id}:{statement.id}"
+            f"Expenses:Mono2ledger:{statement["account"]["id"]}:{statement["id"]}"
         )
-    if not rv.payee:
-        rv.payee = statement.description
+    if rv.payee is None:
+        rv.payee = statement["description"]
     return rv
 
 
@@ -232,27 +197,27 @@ def format_ledger_transaction(
     exchange_currency = None
     if source_statement:
         payee = config.transfer_payee
-        to_account = get_ledger_account_for_account(statement.account)
-        from_account = get_ledger_account_for_account(source_statement.account)
-        amount = statement.amount
-        if source_statement.amount != source_statement.operation_amount:
-            exchange_amount = source_statement.amount
+        to_account = get_ledger_account_for_account(statement["account"])
+        from_account = get_ledger_account_for_account(source_statement["account"])
+        amount = statement["amount"]
+        if source_statement["amount"] != source_statement["operationAmount"]:
+            exchange_amount = source_statement["amount"]
             exchange_currency = currencies.get(
-                numeric=str(source_statement.account.currency_code)
+                numeric=str(source_statement["account"]["currencyCode"])
             ).alpha_3
     else:
         match = match_statement(statement)
         payee = match.payee
         from_account = (
-            get_ledger_account_for_account(statement.account)
+            get_ledger_account_for_account(statement["account"])
             + match.source_ledger_account_suffix
         )
         to_account = match.ledger_account
-        amount = -statement.amount
-        if statement.amount != statement.operation_amount:
-            exchange_amount = statement.operation_amount
+        amount = -statement["amount"]
+        if statement["amount"] != statement["operationAmount"]:
+            exchange_amount = statement["operationAmount"]
             exchange_currency = currencies.get(
-                numeric=str(statement.currency_code)
+                numeric=str(statement["currencyCode"])
             ).alpha_3
 
     if amount < 0:
@@ -261,7 +226,7 @@ def format_ledger_transaction(
         if exchange_amount:
             exchange_amount = -exchange_amount
 
-    transaction_date = datetime.fromtimestamp(statement.time).strftime(
+    transaction_date = datetime.fromtimestamp(statement["time"]).strftime(
         config.ledger_date_format
     )
 
@@ -273,7 +238,9 @@ def format_ledger_transaction(
 
     currency = currencies.get(
         numeric=str(
-            statement.account.currency_code if exchange else statement.currency_code
+            statement["account"]["currencyCode"]
+            if exchange
+            else statement["currencyCode"]
         )
     ).alpha_3
 
@@ -283,8 +250,8 @@ def format_ledger_transaction(
         f"\t{from_account}"
     )
 
-    if config.record_cashback and (cashback_amount := statement.cashback_amount):
-        cashback_type = statement.account.cashback_type
+    if config.record_cashback and (cashback_amount := statement["cashbackAmount"]):
+        cashback_type = statement["account"]["cashbackType"]
         yield (
             f"{transaction_date} {config.cashback_payee}\n"
             f"\t{config.cashback_ledger_asset_account:60}"
@@ -351,19 +318,16 @@ def run(argv):
 
     def is_cross_card_statement(statement: StatementItem) -> bool:
         # 4829 is the MCC mono uses for card transfers
-        if statement.mcc != 4829:
+        if statement["mcc"] != 4829:
             return False
-        if counter_iban := statement.get("counter_iban"):
-            return counter_iban in (x.iban for x in accounts)
+        if counter_iban := statement.get("counterIban"):
+            return counter_iban in (x["iban"] for x in accounts)
 
-        description = statement.description
-        has_card_type = False
-        has_currency = False
-        if "ФОП" in description or re.match(r".*(чорн|біл)(у|ої).*", description):
-            has_card_type = True
-        if re.match(r".*(гривне|євро|долар)(вий|вого).*", description):
-            has_currency = True
-        return has_card_type or has_currency
+        description = statement["description"]
+        # Card type or currency name in description
+        return (
+            "ФОП" in description or re.match(r".*(чорн|біл)(у|ої).*", description)
+        ) or re.match(r".*(гривне|євро|долар)(вий|вого).*", description)
 
     def create_ledger_entries(statements: list[StatementItem]) -> Iterator[str]:
         """
@@ -381,17 +345,24 @@ def run(argv):
             except IndexError:
                 return None
 
-        statements = sorted(statements, key=lambda x: (x.time, x.amount), reverse=True)
+        statements = sorted(
+            statements, key=lambda x: (x["time"], x["amount"]), reverse=True
+        )
         for index, statement in enumerate(statements):
             if is_cross_card_statement(statement):
                 current_statement = statement
                 next_statement = get_next(statements, index)
                 while (
                     next_statement
-                    and current_statement.operation_amount
-                    == -next_statement.operation_amount
-                    and current_statement.currency_code == next_statement.currency_code
-                    and current_statement.mcc == next_statement.mcc
+                    and (
+                        current_statement["operationAmount"]
+                        == -next_statement["operationAmount"]
+                    )
+                    and (
+                        current_statement["currencyCode"]
+                        == next_statement["currencyCode"]
+                    )
+                    and current_statement["mcc"] == next_statement["mcc"]
                 ):
                     current_statement = next_statement
                     del statements[index + 1]

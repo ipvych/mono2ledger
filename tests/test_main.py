@@ -7,8 +7,8 @@ import pytest
 def assert_transaction_by_id(stdout, statement, account, amount_str):
     regex = re.compile(
         f"\n[0-9]{{,4}}[-|/][0-9]{{,2}}[-|/][0-9]{{,2}} .*\n"
-        f"\tAssets:Mono2ledger:{account.id} +{amount_str}\n"
-        f"\tExpenses:Mono2ledger:{account.id}:{statement.id}\n"
+        f"\tAssets:Mono2ledger:{account["id"]} +{amount_str}\n"
+        f"\tExpenses:Mono2ledger:{account["id"]}:{statement["id"]}\n"
     )
     assert regex.search(stdout)
 
@@ -52,5 +52,5 @@ def test_statement_with_exchange(capsys, main, account_factory, statement_factor
         capsys.readouterr().out,
         statement,
         account,
-        f"{statement.amount / 100:.2f} UAH @@ {statement.operationAmount / 100:.2f} USD",
+        f"{statement["amount"] / 100:.2f} UAH @@ {statement["operationAmount"] / 100:.2f} USD",
     )

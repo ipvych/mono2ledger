@@ -1,4 +1,3 @@
-import random
 import tempfile
 from unittest import mock
 
@@ -51,42 +50,15 @@ def main():
     return wrapper
 
 
-def make_account(_):
-    return {
-        "id": fake.sha1(raw_output=False),
-        "currencyCode": 970,
-        "cashbackType": "UAH",
-        "iban": fake.iban(),
-    }
-
-
-def make_statement(_):
-    mcc = random.randint(1000, 9999)
-    amount = random.randint(int(-1e6), int(1e6))
-
-    return {
-        "id": fake.sha1(raw_output=False),
-        "time": fake.unix_time(),
-        "description": fake.sentence(),
-        "mcc": mcc,
-        "originalMcc": mcc,
-        "hold": False,
-        "amount": amount,
-        "operationAmount": amount,
-        "currencyCode": random.choice((840, 980)),
-        "commissionRate": 0,
-        "cashbackAmount": random.randint(0, 50),
-        "balance": amount,
-        "counterIban": fake.iban(),
-    }
-
-
 @register_factory
 class AccountFactory(factory.Factory):
     class Meta:
         model = Account
 
-    json_data = factory.LazyAttribute(make_account)
+    id = factory.Faker("sha1", raw_output=False)
+    currencyCode = 970
+    cashbackType = "UAH"
+    iban = factory.Faker("iban")
 
 
 @register_factory
@@ -95,4 +67,16 @@ class StatementFactory(factory.Factory):
         model = StatementItem
 
     account = factory.LazyAttribute(lambda _: AccountFactory())
-    json_data = factory.LazyAttribute(make_statement)
+    id = factory.Faker("sha1", raw_output=False)
+    time = factory.Faker("unix_time")
+    description = factory.Faker("sentence")
+    mcc = factory.Faker("random_int", min=1000, max=9999)
+    originalMcc = factory.SelfAttribute("mcc")
+    amount = factory.Faker("random_int", min=int(-1e6), max=int(1e6))
+    operationAmount = factory.SelfAttribute("amount")
+    currencyCode = factory.Faker("random_element", elements=[840, 980])
+    cashbackAmount = factory.Faker("random_int", min=0, max=50)
+    counterIban = factory.Faker("iban")
+    # TODO: Not handled
+    # hold = False
+    # commissionRate = 0
