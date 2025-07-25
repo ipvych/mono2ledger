@@ -36,7 +36,7 @@ except ImportError:
 config = None
 
 
-# Subclasses for dict for typing purposes
+# Subclasses from dict for typing purposes
 class Account(dict):
     pass
 
@@ -180,10 +180,8 @@ def match_statement(statement: StatementItem) -> Matcher:
     return rv
 
 
-def format_ledger_transaction(
-    statement: StatementItem, source_statement: Optional[StatementItem] = None
-) -> Iterator[str]:
-    """Yield ledger transactions for statement that possibly came from source"""
+def format_ledger_transaction(statement: StatementItem) -> Iterator[str]:
+    """Return ledger transaction for provided statement."""
 
     def format_amount(amount: float, pad: bool = True) -> str:
         amount = amount / 100
@@ -193,7 +191,7 @@ def format_ledger_transaction(
 
     exchange_amount = None
     exchange_currency = None
-    if source_statement:
+    if source_statement := statement.get("start_statement"):
         payee = config.transfer_payee
         to_account = get_ledger_account_for_account(statement["account"])
         from_account = get_ledger_account_for_account(source_statement["account"])
@@ -242,7 +240,7 @@ def format_ledger_transaction(
         )
     ).alpha_3
 
-    yield (
+    rv = (
         f"{transaction_date} {payee}\n"
         f"\t{to_account:60} {format_amount(amount)} {currency} {exchange}\n"
         f"\t{from_account}"
@@ -250,12 +248,64 @@ def format_ledger_transaction(
 
     if config.record_cashback and (cashback_amount := statement["cashbackAmount"]):
         cashback_type = statement["account"]["cashbackType"]
-        yield (
+        rv += (
+            "\n\n"
             f"{transaction_date} {config.cashback_payee}\n"
             f"\t{config.cashback_ledger_asset_account:60}"
             f" {format_amount(cashback_amount)} {cashback_type}\n"
             f"\t{config.cashback_ledger_income_account}"
         )
+    return rv
+
+
+def merge_cross_card_statements(
+    statements: list[StatementItem],
+) -> Iterator[StatementItem]:
+    """Sort statements by time and yield them, merging multiple statements that are
+    between accounts into a single statement.
+
+    Merged statement has `start_statement` key set containing starting statement
+    from which info like originating currency & amount can be deduced.
+    """
+    start_statement: StatementItem = None
+    end_statement: StatementItem = None
+    # If description & mcc matches receiving end and there is no iban/name then
+    # it is a end transaction
+    # If mcc & iban/name match existing account then it is sending transaction and
+    # some heuristic using description is used to determine which one is beginning
+    # one
+    for statement in sorted(statements, key=lambda x: x["time"]):
+        # 4829 is the MCC used for card transfers
+        if statement["mcc"] == 4829:
+            description = statement["description"]
+            if "counterIban" not in statement:
+                if re.match(
+                    "З (гривне|євро|доларо)вого рахунку ФОП", description
+                ) or re.match("З (чорн|біл)ої картки", description):
+                    end_statement = statement
+                    # TODO: Maybe match counterIban by account list. For now it is fine
+                    # without it but might be useful when I need to handle non-FOP
+                    # transfers
+            else:
+                if re.match(
+                    "На гривневий рахунок ФОП для переказу на картку", description
+                ):
+                    start_statement = statement
+                # TODO: This does not match non-FOP currency cards
+                elif not end_statement and re.match(
+                    "На (чорн|біл)у картку", description
+                ):
+                    end_statement = statement
+        else:
+            if start_statement and end_statement:
+                end_statement["start_statement"] = start_statement
+                yield end_statement
+                start_statement = end_statement = None
+            yield statement
+    # Handle case where last statement is cross statement
+    if start_statement and end_statement:
+        end_statement["start_statement"] = start_statement
+        yield end_statement
 
 
 def setup_logging(debug: bool = False) -> None:
@@ -314,78 +364,15 @@ def run(argv):
     last_transaction_date = get_last_transaction_date(
         args.input, now - timedelta(days=30)
     )
-
-    accounts = fetch_accounts()
-
-    def is_cross_card_statement(statement: StatementItem) -> bool:
-        # 4829 is the MCC mono uses for card transfers
-        if statement["mcc"] != 4829:
-            return False
-        if counter_iban := statement.get("counterIban"):
-            return counter_iban in (x["iban"] for x in accounts)
-
-        description = statement["description"]
-        # Card type or currency name in description
-        return (
-            "ФОП" in description or re.match(r".*(чорн|біл)(у|ої).*", description)
-        ) or re.match(r".*(гривне|євро|долар)(вий|вого).*", description)
-
-    def create_ledger_entries(statements: list[StatementItem]) -> Iterator[str]:
-        """
-        Given list of statements sort them by chronological order from newest to latest
-        and yield ledger entry for each one with taking cross card statements into
-        account by grouping them into single statement.
-
-        Note that because of ordering before displaying returned value it needs to be
-        reversed first.
-        """
-
-        def get_next(lst, index):
-            try:
-                return lst[index + 1]
-            except IndexError:
-                return None
-
-        statements = sorted(
-            statements, key=lambda x: (x["time"], x["amount"]), reverse=True
-        )
-        for index, statement in enumerate(statements):
-            if is_cross_card_statement(statement):
-                current_statement = statement
-                next_statement = get_next(statements, index)
-                while (
-                    next_statement
-                    and (
-                        current_statement["operationAmount"]
-                        == -next_statement["operationAmount"]
-                    )
-                    and (
-                        current_statement["currencyCode"]
-                        == next_statement["currencyCode"]
-                    )
-                    and current_statement["mcc"] == next_statement["mcc"]
-                ):
-                    current_statement = next_statement
-                    del statements[index + 1]
-                    next_statement = get_next(statements, index)
-
-                # Yield from reversed because list will get reversed again messing up
-                # order returned by format_ledger_transaction...
-                yield from reversed(
-                    list(format_ledger_transaction(statement, current_statement))
-                )
-            else:
-                yield from reversed(list(format_ledger_transaction(statement)))
-
-    statements = fetch_statements(accounts, last_transaction_date, now)
-    ledger_entries = list(create_ledger_entries(statements))
+    statements = fetch_statements(fetch_accounts(), last_transaction_date, now)
 
     header_datetime = now.strftime("%Y-%m-%d %H:%M:%S")
     header = f"\n;; Begin mono2ledger output\n;; Date and time: {header_datetime}\n"
     footer = "\n;; End mono2ledger output\n"
 
     print(header)
-    print("\n\n".join(reversed(ledger_entries)))
+    for statement in merge_cross_card_statements(statements):
+        print(format_ledger_transaction(statement), end="\n\n")
     print(footer)
 
 
