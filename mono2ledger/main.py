@@ -84,13 +84,15 @@ def get_last_transaction_date(file_path: str, default=None) -> datetime:
 def fetch(endpoint: str) -> dict:
     url = urljoin("https://api.monobank.ua", endpoint)
     request = Request(url, headers={"X-Token": config.api_key})
+    logging.debug("Making request to URL %s", url)
     with urlopen(request) as response:
-        return json.load(response.fp)
+        data = json.loads(response.fp.read().decode("utf-8"))
+        logging.debug("Got JSON response %s", data)
+        return data
 
 
 def fetch_accounts() -> list[Account]:
     response = fetch("/personal/client-info")
-    logging.debug(f"Fetched accounts with response {response}")
     return [
         Account(**account)
         for account in response["accounts"]
@@ -137,9 +139,6 @@ def fetch_statements(
                     f"{e.read().decode()}"
                 )
                 exit(1)
-        logging.debug(
-            f"Fetched statement for account {account} with response {response}"
-        )
         logging.info(
             f"Fetched statements for account {account["id"]}"
             f" from {_from_time.date().isoformat()} to {_to_time.date().isoformat()}."
@@ -289,7 +288,10 @@ def parse_args(argv):
         nargs="?",
     )
     parser.add_argument(
-        "-D", "--debug", action="store_true", help="enable printing of debugging info"
+        "-D",
+        "--debug",
+        action="store_true",
+        help="print JSON responses received from API",
     )
     args = parser.parse_args(argv[1:])
     if not args.input:
