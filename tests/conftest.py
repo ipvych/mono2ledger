@@ -1,3 +1,4 @@
+import random
 import tempfile
 from unittest import mock
 
@@ -9,7 +10,17 @@ from mono2ledger.main import Account, StatementItem
 from mono2ledger.main import main as real_main
 from pytest_factoryboy import register as register_factory
 
-fake = Faker()
+fake = Faker("uk_UA")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def faker_session_locale():
+    return ["uk_UA"]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def faker_session_seed():
+    return random.randint(0, 999999)
 
 
 @pytest.fixture
