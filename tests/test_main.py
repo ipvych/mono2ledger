@@ -4,13 +4,22 @@ from datetime import datetime
 import pytest
 
 
-def assert_transaction_printed(stdout, account_from, account_to, amount_str):
+def format_ledger_date(statement) -> str:
+    return datetime.fromtimestamp(statement["time"]).strftime("%Y/%m/%d")
+
+
+def remove_comments(text: str) -> str:
+    """Return text without ledger comments"""
+    return re.sub("^ *;;.*\n?", "", text, flags=re.MULTILINE).strip()
+
+
+def assert_transaction_printed(stdout, payee, account_from, account_to, amount_str):
     regex = re.compile(
-        f"\n[0-9]{{,4}}[-|/][0-9]{{,2}}[-|/][0-9]{{,2}} .*\n"
+        f"{re.escape(payee)}\n"
         f"\t{re.escape(account_from)} +{re.escape(amount_str)}\n"
-        f"\t{re.escape(account_to)}\n"
+        f"\t{re.escape(account_to)}"
     )
-    if not regex.search(stdout):
+    if not re.match(regex, remove_comments(stdout)):
         pytest.fail(
             f"Stdout did not match regexp\nStdout: {stdout}\nRegex: {regex.pattern}"
         )
@@ -45,6 +54,7 @@ def test_statement(faker, capsys, main, account_factory, statement_factory, outg
     if outgoing:
         assert_transaction_printed(
             capsys.readouterr().out,
+            f"{format_ledger_date(statement)} {statement["description"]}",
             f"Expenses:Mono2ledger:{account["id"]}:{statement["id"]}",
             f"Assets:Mono2ledger:{account["id"]}",
             f"{-statement["amount"] / 100:.2f} UAH",
@@ -52,6 +62,7 @@ def test_statement(faker, capsys, main, account_factory, statement_factory, outg
     else:
         assert_transaction_printed(
             capsys.readouterr().out,
+            f"{format_ledger_date(statement)} {statement["description"]}",
             f"Assets:Mono2ledger:{account["id"]}",
             f"Expenses:Mono2ledger:{account["id"]}:{statement["id"]}",
             f"{statement["amount"] / 100:.2f} UAH",
@@ -74,12 +85,14 @@ def test_statement_with_exchange(
         currencyCode=840,  # USD
         amount=amount,
         operationAmount=currency_amount,
+        cashbackAmount=0,
     )
     main(ledger_file="", accounts=[account], statements=[statement])
 
     if outgoing:
         assert_transaction_printed(
             capsys.readouterr().out,
+            f"{format_ledger_date(statement)} {statement["description"]}",
             f"Expenses:Mono2ledger:{account["id"]}:{statement["id"]}",
             f"Assets:Mono2ledger:{account["id"]}",
             f"{-statement["operationAmount"] / 100:.2f} USD @@ {-statement["amount"] / 100:.2f} UAH",
@@ -87,6 +100,7 @@ def test_statement_with_exchange(
     else:
         assert_transaction_printed(
             capsys.readouterr().out,
+            f"{format_ledger_date(statement)} {statement["description"]}",
             f"Assets:Mono2ledger:{account["id"]}",
             f"Expenses:Mono2ledger:{account["id"]}:{statement["id"]}",
             f"{statement["amount"] / 100:.2f} UAH @@ {statement["operationAmount"] / 100:.2f} USD",
@@ -157,6 +171,7 @@ def test_cross_card_statement(faker, capsys, main, account_factory, statement_fa
     )
     assert_transaction_printed(
         capsys.readouterr().out,
+        f"{format_ledger_date(statement_destination)} Transfer",
         f"Assets:Mono2ledger:{account_destination["id"]}",
         f"Assets:Mono2ledger:{account_source["id"]}",
         f"{statement_destination["amount"] / 100:.2f} UAH @@ {-statement_source["amount"] / 100:.2f} EUR",
@@ -186,6 +201,7 @@ def test_statement_with_cross_card_mcc(
     if outgoing:
         assert_transaction_printed(
             capsys.readouterr().out,
+            f"{format_ledger_date(statement)} {statement["description"]}",
             f"Expenses:Mono2ledger:{account["id"]}:{statement["id"]}",
             f"Assets:Mono2ledger:{account["id"]}",
             f"{-statement["amount"] / 100:.2f} UAH",
@@ -193,6 +209,7 @@ def test_statement_with_cross_card_mcc(
     else:
         assert_transaction_printed(
             capsys.readouterr().out,
+            f"{format_ledger_date(statement)} {statement["description"]}",
             f"Assets:Mono2ledger:{account["id"]}",
             f"Expenses:Mono2ledger:{account["id"]}:{statement["id"]}",
             f"{statement["amount"] / 100:.2f} UAH",
