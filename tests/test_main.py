@@ -26,12 +26,49 @@ def test_ledger_file_must_be_set(caplog, main):
     ) in caplog.text
 
 
+@pytest.mark.parametrize("outgoing", (True, False))
+def test_statement(faker, capsys, main, account_factory, statement_factory, outgoing):
+    # This is basically same as cross card MCC test without MCC, too lazy to refactor
+    # it to deduplicate, it is fine
+    account = account_factory(currencyCode=980)  # UAH
+    amount = faker.pyint()
+    if outgoing:
+        amount = -amount
+    statement = statement_factory(
+        account=account,
+        currencyCode=980,  # UAH
+        amount=amount,
+        operationAmount=amount,
+    )
+    main(ledger_file="", accounts=[account], statements=[statement])
+
+    if outgoing:
+        assert_transaction_printed(
+            capsys.readouterr().out,
+            f"Expenses:Mono2ledger:{account["id"]}:{statement["id"]}",
+            f"Assets:Mono2ledger:{account["id"]}",
+            f"{-statement["amount"] / 100:.2f} UAH",
+        )
+    else:
+        assert_transaction_printed(
+            capsys.readouterr().out,
+            f"Assets:Mono2ledger:{account["id"]}",
+            f"Expenses:Mono2ledger:{account["id"]}:{statement["id"]}",
+            f"{statement["amount"] / 100:.2f} UAH",
+        )
+
+
+@pytest.mark.parametrize("outgoing", (True, False))
 def test_statement_with_exchange(
-    faker, capsys, main, account_factory, statement_factory
+    faker, capsys, main, account_factory, statement_factory, outgoing
 ):
     account = account_factory(currencyCode=980)  # UAH
     amount = faker.pyint()
     currency_amount = faker.pyint()
+    if outgoing:
+        amount = -amount
+        currency_amount = -currency_amount
+
     statement = statement_factory(
         account=account,
         currencyCode=840,  # USD
@@ -40,12 +77,20 @@ def test_statement_with_exchange(
     )
     main(ledger_file="", accounts=[account], statements=[statement])
 
-    assert_transaction_printed(
-        capsys.readouterr().out,
-        f"Assets:Mono2ledger:{account["id"]}",
-        f"Expenses:Mono2ledger:{account["id"]}:{statement["id"]}",
-        f"{statement["amount"] / 100:.2f} UAH @@ {statement["operationAmount"] / 100:.2f} USD",
-    )
+    if outgoing:
+        assert_transaction_printed(
+            capsys.readouterr().out,
+            f"Expenses:Mono2ledger:{account["id"]}:{statement["id"]}",
+            f"Assets:Mono2ledger:{account["id"]}",
+            f"{-statement["operationAmount"] / 100:.2f} USD @@ {-statement["amount"] / 100:.2f} UAH",
+        )
+    else:
+        assert_transaction_printed(
+            capsys.readouterr().out,
+            f"Assets:Mono2ledger:{account["id"]}",
+            f"Expenses:Mono2ledger:{account["id"]}:{statement["id"]}",
+            f"{statement["amount"] / 100:.2f} UAH @@ {statement["operationAmount"] / 100:.2f} USD",
+        )
 
 
 def test_cross_card_statement(faker, capsys, main, account_factory, statement_factory):
@@ -67,6 +112,7 @@ def test_cross_card_statement(faker, capsys, main, account_factory, statement_fa
         currencyCode=account_transitive["currencyCode"],
         amount=-currency_amount,
         operationAmount=-amount,
+        cashbackAmount=0,
     )
     statement_transitive_in = statement_factory(
         time=now - 2,
@@ -75,6 +121,7 @@ def test_cross_card_statement(faker, capsys, main, account_factory, statement_fa
         account=account_transitive,
         amount=amount,
         operationAmount=currency_amount,
+        cashbackAmount=0,
     )
     statement_transitive_out = statement_factory(
         time=now - 3,
@@ -84,6 +131,7 @@ def test_cross_card_statement(faker, capsys, main, account_factory, statement_fa
         currencyCode=account_destination["currencyCode"],
         amount=-amount,
         operationAmount=-amount,
+        cashbackAmount=0,
     )
     statement_destination = statement_factory(
         time=now - 4,
@@ -93,6 +141,7 @@ def test_cross_card_statement(faker, capsys, main, account_factory, statement_fa
         currencyCode=account_transitive["currencyCode"],
         amount=amount,
         operationAmount=amount,
+        cashbackAmount=0,
     )
     # destination statement does not have counterIban in my observation
     del statement_destination["counterIban"]
@@ -114,14 +163,37 @@ def test_cross_card_statement(faker, capsys, main, account_factory, statement_fa
     )
 
 
-def test_cross_card_mcc(faker, capsys, main, account_factory, statement_factory):
+@pytest.mark.parametrize("outgoing", (True, False))
+def test_statement_with_cross_card_mcc(
+    faker, capsys, main, account_factory, statement_factory, outgoing
+):
+    """Test that non-cross card statement with cross-card MCC is handled correctly.
+    Cross-card MCC is used for transfering to other foreign cards."""
+
     account = account_factory(currencyCode=980)  # UAH
-    statement = statement_factory(account=account, currencyCode=980, mcc=4829)  # UAH
+    amount = faker.pyint()
+    if outgoing:
+        amount = -amount
+    statement = statement_factory(
+        account=account,
+        currencyCode=980,  # UAH
+        mcc=4829,
+        amount=amount,
+        operationAmount=amount,
+    )
     main(ledger_file="", accounts=[account], statements=[statement])
 
-    assert_transaction_printed(
-        capsys.readouterr().out,
-        f"Assets:Mono2ledger:{account["id"]}",
-        f"Expenses:Mono2ledger:{account["id"]}:{statement["id"]}",
-        f"{statement["amount"] / 100:.2f} UAH",
-    )
+    if outgoing:
+        assert_transaction_printed(
+            capsys.readouterr().out,
+            f"Expenses:Mono2ledger:{account["id"]}:{statement["id"]}",
+            f"Assets:Mono2ledger:{account["id"]}",
+            f"{-statement["amount"] / 100:.2f} UAH",
+        )
+    else:
+        assert_transaction_printed(
+            capsys.readouterr().out,
+            f"Assets:Mono2ledger:{account["id"]}",
+            f"Expenses:Mono2ledger:{account["id"]}:{statement["id"]}",
+            f"{statement["amount"] / 100:.2f} UAH",
+        )

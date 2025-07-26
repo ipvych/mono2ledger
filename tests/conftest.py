@@ -19,7 +19,7 @@ def faker_session_locale():
 
 
 @pytest.fixture(scope="session", autouse=True)
-def faker_session_seed():
+def faker_seed():
     return random.randint(0, 999999)
 
 
@@ -83,7 +83,7 @@ class StatementFactory(factory.Factory):
     description = factory.Faker("sentence")
     mcc = factory.Faker("random_int", min=1000, max=9999)
     originalMcc = factory.SelfAttribute("mcc")
-    amount = factory.Faker("random_int", min=int(-1e6), max=int(1e6))
+    amount = factory.Faker("random_int", min=0, max=int(1e6))
     operationAmount = factory.SelfAttribute("amount")
     currencyCode = factory.Faker("random_element", elements=[840, 980])
     cashbackAmount = factory.Faker("random_int", min=0, max=50)

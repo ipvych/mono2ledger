@@ -15,21 +15,22 @@ from mono2ledger.config import Matcher, get_config
 
 try:
     from pycountry import currencies
+
+    def get_currency_name(numeric: int) -> str:
+        return currencies.get(numeric=str(numeric)).alpha_3
+
 except ImportError:
     logging.warning(
         "pycountry optional dependency is not installed."
         " Some currencies may not be resolved correctly."
     )
 
-    class currencies:
-        @staticmethod
-        def get(*, numeric: str):
-            alpha = {
-                "980": "UAH",
-                "978": "EUR",
-                "840": "USD",
-            }.get(numeric, numeric)
-            return type("currency", (), {"alpha_3": alpha})
+    def get_currency_name(numeric: int) -> str:
+        return {
+            980: "UAH",
+            978: "EUR",
+            840: "USD",
+        }.get(numeric, str(numeric))
 
 
 # Globals set inside main function
@@ -180,27 +181,22 @@ def match_statement(statement: StatementItem) -> Matcher:
     return rv
 
 
+def format_amount(amount: float, pad: bool = True) -> str:
+    # Amount in ledger statement is always positive
+    if amount < 0:
+        amount = -amount
+    amount = amount / 100
+    if config.trim_leading_zeroes and amount % 1 == 0:
+        return f"{int(amount):8}" if pad else str(int(amount))
+    return f"{amount:8.2f}" if pad else f"{amount:.2f}"
+
+
 def format_ledger_transaction(statement: StatementItem) -> Iterator[str]:
     """Return ledger transaction for provided statement."""
-
-    def format_amount(amount: float, pad: bool = True) -> str:
-        amount = amount / 100
-        if config.trim_leading_zeroes and amount % 1 == 0:
-            return f"{int(amount):8}" if pad else str(int(amount))
-        return f"{amount:8.2f}" if pad else f"{amount:.2f}"
-
-    exchange_amount = None
-    exchange_currency = None
-    if source_statement := statement.get("start_statement"):
+    if source_account := statement.get("source_account"):
         payee = config.transfer_payee
         to_account = get_ledger_account_for_account(statement["account"])
-        from_account = get_ledger_account_for_account(source_statement["account"])
-        amount = statement["amount"]
-        if source_statement["amount"] != source_statement["operationAmount"]:
-            exchange_amount = source_statement["amount"]
-            exchange_currency = currencies.get(
-                numeric=str(source_statement["account"]["currencyCode"])
-            ).alpha_3
+        from_account = get_ledger_account_for_account(source_account)
     else:
         match = match_statement(statement)
         payee = match.payee
@@ -209,40 +205,40 @@ def format_ledger_transaction(statement: StatementItem) -> Iterator[str]:
             + match.source_ledger_account_suffix
         )
         to_account = match.ledger_account
-        amount = -statement["amount"]
-        if statement["amount"] != statement["operationAmount"]:
-            exchange_amount = statement["operationAmount"]
-            exchange_currency = currencies.get(
-                numeric=str(statement["currencyCode"])
-            ).alpha_3
 
-    if amount < 0:
+    amount = statement["amount"]
+    operation_amount = statement["operationAmount"]
+    statement_currency = get_currency_name(statement["currencyCode"])
+    account_currency = get_currency_name(statement["account"]["currencyCode"])
+
+    # When amount is positive swap destination & source accounts
+    # Unless it is cross-card statement in which case accounts are correct due to
+    # them being pulled based on this key
+    if amount > 0 and not statement.get("source_account"):
         to_account, from_account = from_account, to_account
-        amount = -amount
-        if exchange_amount:
-            exchange_amount = -exchange_amount
+
+    if statement_currency == account_currency:
+        amount_str = f"{format_amount(amount)} {statement_currency}"
+    elif amount < 0:
+        amount_str = (
+            f"{format_amount(operation_amount)} {statement_currency}"
+            " @@ "
+            f"{format_amount(amount, pad=False)} {account_currency}"
+        )
+    else:
+        amount_str = (
+            f"{format_amount(amount)} {account_currency}"
+            " @@ "
+            f"{format_amount(operation_amount, pad=False)} {statement_currency}"
+        )
 
     transaction_date = datetime.fromtimestamp(statement["time"]).strftime(
         config.ledger_date_format
     )
 
-    exchange = (
-        f" @@ {format_amount(-exchange_amount, pad=False)} {exchange_currency}"
-        if exchange_amount and exchange_currency
-        else ""
-    )
-
-    currency = currencies.get(
-        numeric=str(
-            statement["account"]["currencyCode"]
-            if exchange
-            else statement["currencyCode"]
-        )
-    ).alpha_3
-
     rv = (
         f"{transaction_date} {payee}\n"
-        f"\t{to_account:60} {format_amount(amount)} {currency}{exchange}\n"
+        f"\t{to_account:60} {amount_str}\n"
         f"\t{from_account}"
     )
 
@@ -267,6 +263,15 @@ def merge_cross_card_statements(
     Merged statement has `start_statement` key set containing starting statement
     from which info like originating currency & amount can be deduced.
     """
+
+    def make_cross_card_statement(begin, end):
+        """Create cross card statement from begin & end transaction.
+        Modifies end transaction as side effect"""
+        end["source_account"] = begin["account"]
+        end["currencyCode"] = begin["account"]["currencyCode"]
+        end["operationAmount"] = -begin["amount"]
+        return end
+
     start_statement: StatementItem = None
     end_statement: StatementItem = None
     # If description & mcc matches receiving end and there is no iban/name then
@@ -306,14 +311,12 @@ def merge_cross_card_statements(
                 yield statement
         else:
             if start_statement and end_statement:
-                end_statement["start_statement"] = start_statement
-                yield end_statement
+                yield make_cross_card_statement(start_statement, end_statement)
                 start_statement = end_statement = None
             yield statement
     # Handle case where last statement is cross statement
     if start_statement and end_statement:
-        end_statement["start_statement"] = start_statement
-        yield end_statement
+        yield make_cross_card_statement(start_statement, end_statement)
 
 
 def setup_logging(debug: bool = False) -> None:
