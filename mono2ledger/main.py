@@ -165,12 +165,15 @@ def get_ledger_account_for_account(account: Account) -> str:
 def match_statement(statement: StatementItem) -> Matcher:
     rv = Matcher()
     for matcher in config.matchers:
-        if (
-            any(x.match(statement["description"]) for x in matcher.description_regex)
-            or statement["mcc"] in matcher.mcc_match
+        # When both MCC and description are set they both must match
+        if matcher.mcc_match and statement["mcc"] not in matcher.mcc_match:
+            continue
+        if matcher.description_regex and not any(
+            x.match(statement["description"]) for x in matcher.description_regex
         ):
-            rv = matcher
-            break
+            continue
+        rv = matcher
+        break
 
     if rv.ledger_account is None:
         rv.ledger_account = (
@@ -211,9 +214,9 @@ def format_ledger_transaction(statement: StatementItem) -> Iterator[str]:
     statement_currency = get_currency_name(statement["currencyCode"])
     account_currency = get_currency_name(statement["account"]["currencyCode"])
 
-    # When amount is positive swap destination & source accounts
+    # Swap destination & source accounts for incoming statements
     # Unless it is cross-card statement in which case accounts are correct due to
-    # them being pulled based on this key
+    # them being pulled based on source_account
     if amount > 0 and not statement.get("source_account"):
         to_account, from_account = from_account, to_account
 
@@ -260,8 +263,8 @@ def merge_cross_card_statements(
     """Sort statements by time and yield them, merging multiple statements that are
     between accounts into a single statement.
 
-    Merged statement has `start_statement` key set containing starting statement
-    from which info like originating currency & amount can be deduced.
+    Returned merged statement is crafted in a way to apppear as transfer with exchange
+    and has `source_account` key set to indicate from which card transfer originated.
     """
 
     def make_cross_card_statement(begin, end):
