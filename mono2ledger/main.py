@@ -227,7 +227,7 @@ def format_ledger_transaction(statement: StatementItem) -> Iterator[str]:
     )
 
     exchange = (
-        f"@@ {format_amount(-exchange_amount, pad=False)} {exchange_currency}"
+        f" @@ {format_amount(-exchange_amount, pad=False)} {exchange_currency}"
         if exchange_amount and exchange_currency
         else ""
     )
@@ -242,7 +242,7 @@ def format_ledger_transaction(statement: StatementItem) -> Iterator[str]:
 
     rv = (
         f"{transaction_date} {payee}\n"
-        f"\t{to_account:60} {format_amount(amount)} {currency} {exchange}\n"
+        f"\t{to_account:60} {format_amount(amount)} {currency}{exchange}\n"
         f"\t{from_account}"
     )
 
@@ -286,16 +286,24 @@ def merge_cross_card_statements(
                     # TODO: Maybe match counterIban by account list. For now it is fine
                     # without it but might be useful when I need to handle non-FOP
                     # transfers
-            else:
-                if re.match(
-                    "На гривневий рахунок ФОП для переказу на картку", description
-                ):
-                    start_statement = statement
-                # TODO: This does not match non-FOP currency cards
-                elif not end_statement and re.match(
-                    "На (чорн|біл)у картку", description
-                ):
+            # TODO: This does not match non-FOP currency cards
+            elif re.match(
+                "На гривневий рахунок ФОП для переказу на картку", description
+            ):
+                start_statement = statement
+            elif re.match("На (чорн|біл)у картку", description):
+                if not end_statement:
                     end_statement = statement
+            # Transitive statement that should be skipped
+            elif re.match(
+                "З (гривне|євро|доларо)вого рахунку ФОП для переказу на картку",
+                description,
+            ):
+                pass
+            # When nothing matches this is likely a transfer to outside card which
+            # uses 4829 MCC as well
+            else:
+                yield statement
         else:
             if start_statement and end_statement:
                 end_statement["start_statement"] = start_statement

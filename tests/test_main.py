@@ -112,3 +112,16 @@ def test_cross_card_statement(faker, capsys, main, account_factory, statement_fa
         f"Assets:Mono2ledger:{account_source["id"]}",
         f"{statement_destination["amount"] / 100:.2f} UAH @@ {-statement_source["amount"] / 100:.2f} EUR",
     )
+
+
+def test_cross_card_mcc(faker, capsys, main, account_factory, statement_factory):
+    account = account_factory(currencyCode=980)  # UAH
+    statement = statement_factory(account=account, currencyCode=980, mcc=4829)  # UAH
+    main(ledger_file="", accounts=[account], statements=[statement])
+
+    assert_transaction_printed(
+        capsys.readouterr().out,
+        f"Assets:Mono2ledger:{account["id"]}",
+        f"Expenses:Mono2ledger:{account["id"]}:{statement["id"]}",
+        f"{statement["amount"] / 100:.2f} UAH",
+    )
