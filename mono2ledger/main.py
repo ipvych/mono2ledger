@@ -6,7 +6,7 @@ import re
 import sys
 import time
 from datetime import datetime, timedelta
-from typing import Iterator, Optional
+from typing import Iterator
 from urllib.error import HTTPError
 from urllib.parse import urljoin
 from urllib.request import Request, urlopen
@@ -43,8 +43,7 @@ class Account(dict):
 
 
 class StatementItem(dict):
-    # Set manually to refer to account which this statement is part of
-    account: Account
+    pass
 
 
 def get_last_transaction_date(file_path: str, default=None) -> datetime:
@@ -112,7 +111,7 @@ def date_range(
 
 def fetch_statements(
     accounts: list[Account], from_time: datetime, to_time: datetime
-) -> list[StatementItem]:
+) -> Iterator[StatementItem]:
     intervals = date_range(from_time, to_time, timedelta(days=31))
     combinations = list(itertools.product(accounts, intervals))
     for account, interval in combinations:
@@ -156,6 +155,71 @@ def fetch_statements(
             period = timedelta(days=(_from_time - _to_time).days / 2)
             yield from fetch_statements(accounts, _from_time, _to_time - period)
             yield from fetch_statements(accounts, _from_time + period, _to_time)
+
+
+def merge_cross_card_statements(
+    statements: list[StatementItem],
+) -> Iterator[StatementItem]:
+    """Sort statements by time and yield them, merging multiple statements that are
+    between accounts into a single statement.
+
+    Returned merged statement is crafted in a way to apppear as transfer with exchange
+    and has `source_account` key set to indicate from which card transfer originated.
+    """
+
+    def make_cross_card_statement(begin, end):
+        """Create cross card statement from begin & end transaction.
+        Modifies end transaction as side effect"""
+        end["source_account"] = begin["account"]
+        end["currencyCode"] = begin["account"]["currencyCode"]
+        end["operationAmount"] = -begin["amount"]
+        return end
+
+    start_statement: StatementItem = None
+    end_statement: StatementItem = None
+    # If description & mcc matches receiving end and there is no iban/name then
+    # it is a end transaction
+    # If mcc & iban/name match existing account then it is sending transaction and
+    # some heuristic using description is used to determine which one is beginning
+    # one
+    for statement in sorted(statements, key=lambda x: x["time"]):
+        # 4829 is the MCC used for card transfers
+        if statement["mcc"] == 4829:
+            description = statement["description"]
+            if "counterIban" not in statement:
+                if re.match(
+                    "З (гривне|євро|доларо)вого рахунку ФОП", description
+                ) or re.match("З (чорн|біл)ої картки", description):
+                    end_statement = statement
+                    # TODO: Maybe match counterIban by account list. For now it is fine
+                    # without it but might be useful when I need to handle non-FOP
+                    # transfers
+            # TODO: This does not match non-FOP currency cards
+            elif re.match(
+                "На гривневий рахунок ФОП для переказу на картку", description
+            ):
+                start_statement = statement
+            elif re.match("На (чорн|біл)у картку", description):
+                if not end_statement:
+                    end_statement = statement
+            # Transitive statement that should be skipped
+            elif re.match(
+                "З (гривне|євро|доларо)вого рахунку ФОП для переказу на картку",
+                description,
+            ):
+                pass
+            # When nothing matches this is likely a transfer to outside card which
+            # uses 4829 MCC as well
+            else:
+                yield statement
+        else:
+            if start_statement and end_statement:
+                yield make_cross_card_statement(start_statement, end_statement)
+                start_statement = end_statement = None
+            yield statement
+    # Handle case where last statement is cross statement
+    if start_statement and end_statement:
+        yield make_cross_card_statement(start_statement, end_statement)
 
 
 def get_ledger_account_for_account(account: Account) -> str:
@@ -255,71 +319,6 @@ def format_ledger_transaction(statement: StatementItem) -> Iterator[str]:
             f"\t{config.cashback_ledger_income_account}"
         )
     return rv
-
-
-def merge_cross_card_statements(
-    statements: list[StatementItem],
-) -> Iterator[StatementItem]:
-    """Sort statements by time and yield them, merging multiple statements that are
-    between accounts into a single statement.
-
-    Returned merged statement is crafted in a way to apppear as transfer with exchange
-    and has `source_account` key set to indicate from which card transfer originated.
-    """
-
-    def make_cross_card_statement(begin, end):
-        """Create cross card statement from begin & end transaction.
-        Modifies end transaction as side effect"""
-        end["source_account"] = begin["account"]
-        end["currencyCode"] = begin["account"]["currencyCode"]
-        end["operationAmount"] = -begin["amount"]
-        return end
-
-    start_statement: StatementItem = None
-    end_statement: StatementItem = None
-    # If description & mcc matches receiving end and there is no iban/name then
-    # it is a end transaction
-    # If mcc & iban/name match existing account then it is sending transaction and
-    # some heuristic using description is used to determine which one is beginning
-    # one
-    for statement in sorted(statements, key=lambda x: x["time"]):
-        # 4829 is the MCC used for card transfers
-        if statement["mcc"] == 4829:
-            description = statement["description"]
-            if "counterIban" not in statement:
-                if re.match(
-                    "З (гривне|євро|доларо)вого рахунку ФОП", description
-                ) or re.match("З (чорн|біл)ої картки", description):
-                    end_statement = statement
-                    # TODO: Maybe match counterIban by account list. For now it is fine
-                    # without it but might be useful when I need to handle non-FOP
-                    # transfers
-            # TODO: This does not match non-FOP currency cards
-            elif re.match(
-                "На гривневий рахунок ФОП для переказу на картку", description
-            ):
-                start_statement = statement
-            elif re.match("На (чорн|біл)у картку", description):
-                if not end_statement:
-                    end_statement = statement
-            # Transitive statement that should be skipped
-            elif re.match(
-                "З (гривне|євро|доларо)вого рахунку ФОП для переказу на картку",
-                description,
-            ):
-                pass
-            # When nothing matches this is likely a transfer to outside card which
-            # uses 4829 MCC as well
-            else:
-                yield statement
-        else:
-            if start_statement and end_statement:
-                yield make_cross_card_statement(start_statement, end_statement)
-                start_statement = end_statement = None
-            yield statement
-    # Handle case where last statement is cross statement
-    if start_statement and end_statement:
-        yield make_cross_card_statement(start_statement, end_statement)
 
 
 def setup_logging(debug: bool = False) -> None:
