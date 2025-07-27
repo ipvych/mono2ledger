@@ -127,6 +127,7 @@ def test_cross_card_statement(faker, capsys, main, account_factory, statement_fa
         amount=-currency_amount,
         operationAmount=-amount,
         cashbackAmount=0,
+        counterIban=account_transitive["iban"],
     )
     statement_transitive_in = statement_factory(
         time=now - 2,
@@ -136,6 +137,7 @@ def test_cross_card_statement(faker, capsys, main, account_factory, statement_fa
         amount=amount,
         operationAmount=currency_amount,
         cashbackAmount=0,
+        counterIban=account_source["iban"],
     )
     statement_transitive_out = statement_factory(
         time=now - 3,
@@ -146,6 +148,7 @@ def test_cross_card_statement(faker, capsys, main, account_factory, statement_fa
         amount=-amount,
         operationAmount=-amount,
         cashbackAmount=0,
+        counterIban=account_destination["iban"],
     )
     statement_destination = statement_factory(
         time=now - 4,

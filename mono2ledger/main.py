@@ -158,6 +158,7 @@ def fetch_statements(
 
 
 def merge_cross_card_statements(
+    accounts: list[Account],
     statements: list[StatementItem],
 ) -> Iterator[StatementItem]:
     """Sort statements by time and yield them, merging multiple statements that are
@@ -175,6 +176,7 @@ def merge_cross_card_statements(
         end["operationAmount"] = -begin["amount"]
         return end
 
+    account_ibans = set(x["iban"] for x in accounts)
     start_statement: StatementItem = None
     end_statement: StatementItem = None
     # If description & mcc matches receiving end and there is no iban/name then
@@ -183,35 +185,28 @@ def merge_cross_card_statements(
     # some heuristic using description is used to determine which one is beginning
     # one
     for statement in sorted(statements, key=lambda x: x["time"]):
+        description = statement["description"]
         # 4829 is the MCC used for card transfers
         if statement["mcc"] == 4829:
-            description = statement["description"]
-            if "counterIban" not in statement:
+            if statement.get("counterIban") in account_ibans:
+                # TODO: This does not match non-FOP currency cards
+                if re.match(
+                    "На гривневий рахунок ФОП для переказу на картку", description
+                ):
+                    start_statement = statement
+                elif (
+                    re.match("На (чорн|біл)у картку", description) and not end_statement
+                ):
+                    end_statement = statement
+            else:
                 if re.match(
                     "З (гривне|євро|доларо)вого рахунку ФОП", description
                 ) or re.match("З (чорн|біл)ої картки", description):
                     end_statement = statement
-                    # TODO: Maybe match counterIban by account list. For now it is fine
-                    # without it but might be useful when I need to handle non-FOP
-                    # transfers
-            # TODO: This does not match non-FOP currency cards
-            elif re.match(
-                "На гривневий рахунок ФОП для переказу на картку", description
-            ):
-                start_statement = statement
-            elif re.match("На (чорн|біл)у картку", description):
-                if not end_statement:
-                    end_statement = statement
-            # Transitive statement that should be skipped
-            elif re.match(
-                "З (гривне|євро|доларо)вого рахунку ФОП для переказу на картку",
-                description,
-            ):
-                pass
-            # When nothing matches this is likely a transfer to outside card which
-            # uses 4829 MCC as well
-            else:
-                yield statement
+                # When nothing matches this is likely a transfer to outside card which
+                # uses 4829 MCC as well
+                else:
+                    yield statement
         else:
             if start_statement and end_statement:
                 yield make_cross_card_statement(start_statement, end_statement)
@@ -377,6 +372,7 @@ def run(argv):
     last_transaction_date = get_last_transaction_date(
         args.input, now - timedelta(days=30)
     )
+    accounts = fetch_accounts()
     statements = fetch_statements(fetch_accounts(), last_transaction_date, now)
 
     header_datetime = now.strftime("%Y-%m-%d %H:%M:%S")
@@ -384,7 +380,7 @@ def run(argv):
     footer = "\n;; End mono2ledger output\n"
 
     print(header)
-    for statement in merge_cross_card_statements(statements):
+    for statement in merge_cross_card_statements(accounts, statements):
         print(format_ledger_transaction(statement), end="\n\n")
     print(footer)
 
