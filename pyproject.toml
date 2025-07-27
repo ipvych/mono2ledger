@@ -12,7 +12,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {file = "COPYING"}
 dependencies = ["pycountry"]
-version = "2.1"
+version = "3.0"
 
 [project.optional-dependencies]
 dev = ["mono2ledger[test]", "mono2ledger[format]"]
