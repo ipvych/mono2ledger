@@ -5,9 +5,8 @@ from unittest import mock
 import factory
 import pytest
 from faker import Faker
-from mono2ledger.config import Config
-from mono2ledger.main import Account, StatementItem
-from mono2ledger.main import main as real_main
+from mono2ledger import Account, Config, StatementItem
+from mono2ledger import main as real_main
 from pytest_factoryboy import register as register_factory
 
 fake = Faker("uk_UA")
@@ -42,11 +41,11 @@ def main():
             raise ValueError
 
         with (
-            mock.patch("mono2ledger.main.get_config", return_value=config_obj),
-            mock.patch("mono2ledger.main.fetch_accounts", return_value=accounts),
-            mock.patch("mono2ledger.main.fetch_statements", return_value=statements),
+            mock.patch("mono2ledger.get_config", return_value=config_obj),
+            mock.patch("mono2ledger.fetch_accounts", return_value=accounts),
+            mock.patch("mono2ledger.fetch_statements", return_value=statements),
             # Make sure fetch mocks above are overwriting real fetch call
-            mock.patch("mono2ledger.main.fetch", side_effect=raise_valueerror),
+            mock.patch("mono2ledger.fetch", side_effect=raise_valueerror),
             mock.patch("sys.argv", ("mono2ledger",) + argv),
         ):
 
