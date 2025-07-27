@@ -373,7 +373,9 @@ def run(argv):
         args.input, now - timedelta(days=30)
     )
     accounts = fetch_accounts()
-    statements = fetch_statements(fetch_accounts(), last_transaction_date, now)
+    # Force evaluate because otherwise printing done from within breaks header printing
+    # order
+    statements = list(fetch_statements(fetch_accounts(), last_transaction_date, now))
 
     header_datetime = now.strftime("%Y-%m-%d %H:%M:%S")
     header = f"\n;; Begin mono2ledger output\n;; Date and time: {header_datetime}\n"
